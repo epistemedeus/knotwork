@@ -1,0 +1,22 @@
+# binaries
+/bin/
+/knotwork
+/dist/
+
+# local runtime state
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.bundle
+*.zst
+
+# setup
+.env
+.env.local
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+frontend/node_modules/

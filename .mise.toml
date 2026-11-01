@@ -1,0 +1,8 @@
+[tools]
+go = "1.27.3"
+golangci-lint = "latest"
+node = "26.10.0"
+pnpm = "12.16.1"
+
+[env]
+GOFLAGS = "-trimpath"

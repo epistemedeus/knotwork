@@ -1,0 +1,5 @@
+# @knadh/oat publishes frequently; allow same-day releases for the UI stack.
+minimumReleaseAge: 0
+
+allowBuilds:
+  esbuild: true
