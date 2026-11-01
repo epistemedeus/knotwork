@@ -16,10 +16,10 @@ core. There is no message broker and no second service to deploy.
 | `internal/federation` | HTTP signatures, allowlisted inbox, ForgeFed activities. |
 | `internal/ci` | Pipeline parser, Docker runner, log hub, executor. |
 | `internal/backup` | Debounced `git bundle` and compressed database snapshots. |
-| `internal/mcp` | MCP server over SSE with tools and resources. |
+| `internal/mcp` | MCP tools and resources over stateless Streamable HTTP, legacy SSE, and stdio. |
 | `internal/manifest` | Third-party app manifest validation and webhook signing. |
 | `internal/web` | Router, HTML pages, JSON API, embedded static assets. |
-| `cmd/knotwork` | `serve`, `admin`, `auth`, and `hook` commands. |
+| `cmd/knotwork` | `serve`, `admin`, `auth`, `hook`, and `mcp` commands. |
 
 Dependency direction is inward: `web` and `cmd` depend on adapters, adapters
 depend on `domain`, and `domain` depends on nothing.
@@ -56,6 +56,15 @@ Git use, or opaque session tokens for SCIM.
 `knotwork admin break-glass` mints a single-use session URL for an existing
 admin. SCIM uses the same bearer-token path; deactivation (`active: false` or
 `DELETE`) revokes every live session immediately.
+
+MCP reuses those bearers. It does not issue tokens. `POST /api/mcp` is
+stateless Streamable HTTP through `github.com/modelcontextprotocol/go-sdk`
+v1.8.0, so each request's bearer is the only principal. `GET /api/mcp/sse` and
+`POST /api/mcp/messages` remain for legacy SSE clients; the session id only
+prevents a different bearer from writing into that stream. `knotwork mcp`
+speaks stdio for `KNOTWORK_MCP_TOKEN` and rechecks that token on every call.
+RFC 9728 metadata is published at `/.well-known/oauth-protected-resource/api/mcp`.
+There is no embedded authorization server.
 
 ## Git path
 
