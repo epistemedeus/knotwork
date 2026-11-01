@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newRequest(target string) *http.Request {
@@ -41,6 +42,10 @@ func TestRepositoryRoundTrip(t *testing.T) {
 		info, err := os.Stat(filepath.Join(disk, "hooks", hook))
 		if err != nil || info.Mode()&0o111 == 0 {
 			t.Fatalf("hook %s missing or not executable: %v", hook, err)
+		}
+		// Validate hook script permissions are read-only 0555
+		if perm := info.Mode().Perm(); perm != 0o555 {
+			t.Fatalf("hook %s permissions = %o, want 0555", hook, perm)
 		}
 	}
 
@@ -127,16 +132,30 @@ func TestRepositoryRoundTrip(t *testing.T) {
 }
 
 func TestValidateRef(t *testing.T) {
-	valid := []string{"", "HEAD", "main", "refs/heads/main", "refs/federated/mr/1", "a1b2c3"}
+	valid := []string{"", "HEAD", "main", "refs/heads/main", "refs/federated/mr/1", "a1b2c3", "feature/new-ui_1.0"}
 	for _, ref := range valid {
 		if err := ValidateRef(ref); err != nil {
 			t.Errorf("ValidateRef(%q) = %v", ref, err)
 		}
 	}
-	invalid := []string{"-x", "main..dev", "main branch", "refs/heads/main:evil", "a^b", "a~1"}
+	invalid := []string{
+		"-x",
+		"--upload-pack=cat /etc/passwd",
+		"--output=/etc/cron.d/pwn",
+		"-c protocol.ext.allow=always",
+		"main..dev",
+		"main branch",
+		"refs/heads/main:evil",
+		"a^b",
+		"a~1",
+		"main@{yesterday}",
+		"/starts/slash",
+		"ends/slash/",
+		"ends/dot.",
+	}
 	for _, ref := range invalid {
 		if err := ValidateRef(ref); err == nil {
-			t.Errorf("ValidateRef(%q) accepted", ref)
+			t.Errorf("ValidateRef(%q) accepted, want error", ref)
 		}
 	}
 }
@@ -169,4 +188,156 @@ func TestParseGitRequest(t *testing.T) {
 	if _, ok := parseGitRequest(newRequest("/alice/demo.git/unknown")); ok {
 		t.Fatal("unknown endpoint accepted")
 	}
+	// Argument injection via path or service
+	if _, ok := parseGitRequest(newRequest("/-upload-pack/demo.git/git-upload-pack")); ok {
+		t.Fatal("option owner accepted")
+	}
+	if _, ok := parseGitRequest(newRequest("/alice/-evil.git/git-upload-pack")); ok {
+		t.Fatal("option repo accepted")
+	}
+	if _, ok := parseGitRequest(newRequest("/../../etc/cron.d.git/git-upload-pack")); ok {
+		t.Fatal("path traversal repo accepted")
+	}
+	if _, ok := parseGitRequest(newRequest("/alice/demo.git/info/refs?service=--upload-pack=cmd")); ok {
+		t.Fatal("malicious service query accepted")
+	}
+}
+
+func TestSafeGitEnv(t *testing.T) {
+	env := SafeGitEnv("/usr/local/bin/git")
+	required := map[string]string{
+		"GIT_CONFIG_NOSYSTEM":    "1",
+		"GIT_CONFIG_GLOBAL":      "/dev/null",
+		"GIT_TERMINAL_PROMPT":    "0",
+		"GIT_ALLOW_PROTOCOL":     "http:https",
+		"GIT_PROTOCOL_FROM_USER": "0",
+	}
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	for k, want := range required {
+		if got := envMap[k]; got != want {
+			t.Errorf("env[%q] = %q, want %q", k, got, want)
+		}
+	}
+	if pathVal, ok := envMap["PATH"]; !ok || !strings.Contains(pathVal, "/usr/bin") {
+		t.Errorf("PATH is missing or incomplete: %q", pathVal)
+	}
+}
+
+func TestDiskPathSecurity(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := NewManager(root, "git", "", filepath.Join(root, "hook.sock"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	valid := []string{"alice/demo", "user-1/my-repo_1", "team/proj"}
+	for _, p := range valid {
+		disk, err := mgr.DiskPath(p)
+		if err != nil {
+			t.Errorf("DiskPath(%q) unexpected error: %v", p, err)
+		}
+		if !strings.HasPrefix(disk, root) {
+			t.Errorf("DiskPath(%q) = %q does not start with root %q", p, disk, root)
+		}
+	}
+
+	invalid := []string{
+		"../../etc/cron.d",
+		"../secret",
+		"alice/../../etc/passwd",
+		"-upload-pack/demo",
+		"alice/-evil",
+		"alice/repo$injection",
+		"alice/repo;cmd",
+		"",
+		".",
+		"/absolute/path",
+	}
+	for _, p := range invalid {
+		if _, err := mgr.DiskPath(p); err == nil {
+			t.Errorf("DiskPath(%q) should have been rejected", p)
+		}
+	}
+}
+
+func TestInitSecurityConfigs(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := NewManager(root, "git", "", filepath.Join(root, "hook.sock"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	disk, err := mgr.Init(context.Background(), "alice/secure-repo")
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Verify repo directory permissions (0750)
+	dirInfo, err := os.Stat(disk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o750 {
+		t.Errorf("repo directory permissions = %o, want 0750", perm)
+	}
+
+	// Verify Git configs
+	expectedConfigs := map[string]string{
+		"receive.fsckobjects":   "true",
+		"fetch.fsckobjects":     "true",
+		"transfer.fsckobjects":  "true",
+		"receive.maxinputsize":  "104857600",
+		"core.sharedrepository": "0640",
+	}
+	for cfgKey, want := range expectedConfigs {
+		got := gitCmd(t, disk, "config", cfgKey)
+		if !strings.EqualFold(got, want) {
+			t.Errorf("git config %s = %q, want %q", cfgKey, got, want)
+		}
+	}
+
+	// Verify core.hooksPath is set to the centralized hooks directory
+	hooksPath := gitCmd(t, disk, "config", "core.hooksPath")
+	if hooksPath != mgr.HooksDir {
+		t.Errorf("core.hooksPath = %q, want %q", hooksPath, mgr.HooksDir)
+	}
+}
+
+func TestConcurrencyLimiter(t *testing.T) {
+	limiter := NewConcurrencyLimiter(2)
+	ctx := context.Background()
+
+	if err := limiter.Acquire(ctx); err != nil {
+		t.Fatalf("acquire 1 failed: %v", err)
+	}
+	if err := limiter.Acquire(ctx); err != nil {
+		t.Fatalf("acquire 2 failed: %v", err)
+	}
+
+	// Third acquire with canceled context should fail immediately
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := limiter.Acquire(cancelCtx); err == nil {
+		t.Fatal("acquire 3 with canceled context should have failed")
+	}
+
+	// Third acquire with short timeout should time out
+	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancelTimeout()
+	if err := limiter.Acquire(timeoutCtx); err == nil {
+		t.Fatal("acquire 3 should time out")
+	}
+
+	// Release one and reacquire
+	limiter.Release()
+	if err := limiter.Acquire(ctx); err != nil {
+		t.Fatalf("acquire after release failed: %v", err)
+	}
+	limiter.Release()
+	limiter.Release()
 }

@@ -5,27 +5,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
+	"regexp"
 	"strings"
 )
 
 var (
 	ErrInvalidRef  = errors.New("invalid git ref")
 	ErrPathMissing = errors.New("path not found in revision")
+	refPattern     = regexp.MustCompile(`^[a-zA-Z0-9_\-./]+$`)
 )
 
-// ValidateRef rejects rev arguments that could be interpreted as options or
-// that escape a plain revision namespace.
+// ValidateRef validates branch names, tags, and revisions against a strict
+// alphanumeric regex (^[a-zA-Z0-9_\-./]+$), rejecting options (starting with -),
+// control characters, path traversals (..), reflog queries (@{), or invalid edges.
 func ValidateRef(ref string) error {
 	ref = strings.TrimSpace(ref)
 	if ref == "" || ref == "HEAD" {
 		return nil
 	}
-	if strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, "\x00\n\r\t :?[\\^~*") || strings.Contains(ref, "..") {
+	if strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") || strings.Contains(ref, "..") || strings.Contains(ref, "@{") {
 		return ErrInvalidRef
 	}
-	if strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") {
+	if !refPattern.MatchString(ref) {
 		return ErrInvalidRef
 	}
 	return nil
@@ -45,7 +47,7 @@ func ValidatePath(p string) error {
 
 // IsEmpty reports whether diskPath has any commits.
 func (m *Manager) IsEmpty(ctx context.Context, diskPath string) (bool, error) {
-	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "rev-list", "-n", "1", "--all")
+	cmd := m.Command(ctx, "-C", diskPath, "rev-list", "-n", "1", "--all")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git rev-list: %w", err)
@@ -61,7 +63,7 @@ func (m *Manager) ListTree(ctx context.Context, diskPath, ref string) ([]string,
 	if err := ValidateRef(ref); err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "ls-tree", "-r", "-z", "--name-only", ref, "--")
+	cmd := m.Command(ctx, "-C", diskPath, "ls-tree", "-r", "-z", "--name-only", "--", ref)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -81,7 +83,8 @@ func (m *Manager) ListTree(ctx context.Context, diskPath, ref string) ([]string,
 	return paths, nil
 }
 
-// ReadBlob returns the contents of path at ref together with a binary flag.
+// ReadBlob returns the contents of path at ref together with a binary flag
+// directly from object storage via plumbing without checkout or host execution.
 func (m *Manager) ReadBlob(ctx context.Context, diskPath, ref, filePath string) ([]byte, bool, error) {
 	if ref == "" {
 		ref = "HEAD"
@@ -92,15 +95,16 @@ func (m *Manager) ReadBlob(ctx context.Context, diskPath, ref, filePath string) 
 	if err := ValidatePath(filePath); err != nil {
 		return nil, false, err
 	}
-	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "show", ref+":"+filePath)
+	cmd := m.Command(ctx, "-C", diskPath, "cat-file", "-p", "--", ref+":"+filePath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		if strings.Contains(stderr.String(), "does not exist") || strings.Contains(stderr.String(), "exists on disk") {
+		errStr := stderr.String()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "Not a valid object name") || strings.Contains(errStr, "fatal: Not a valid object name") {
 			return nil, false, ErrPathMissing
 		}
-		return nil, false, fmt.Errorf("git show: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, false, fmt.Errorf("git cat-file: %w: %s", err, strings.TrimSpace(errStr))
 	}
 	return out, isBinary(out), nil
 }
@@ -124,11 +128,11 @@ func (m *Manager) DiffRange(ctx context.Context, diskPath, base, head string) ([
 		if err := ValidateRef(base); err != nil {
 			return nil, err
 		}
-		args = []string{"-C", diskPath, "diff", "--no-color", "--no-ext-diff", base + "..." + head, "--"}
+		args = []string{"-C", diskPath, "diff", "--no-color", "--no-ext-diff", "--end-of-options", base + "..." + head, "--"}
 	} else {
-		args = []string{"-C", diskPath, "show", "--format=", "--no-color", "--no-ext-diff", "--patch", head, "--"}
+		args = []string{"-C", diskPath, "show", "--format=", "--no-color", "--no-ext-diff", "--patch", "--end-of-options", head, "--"}
 	}
-	cmd := exec.CommandContext(ctx, m.GitBinary, args...)
+	cmd := m.Command(ctx, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -147,7 +151,7 @@ func (m *Manager) ResolveCommit(ctx context.Context, diskPath string, candidates
 		if err := ValidateRef(candidate); err != nil {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		cmd := m.Command(ctx, "-C", diskPath, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate+"^{commit}")
 		out, err := cmd.Output()
 		if err == nil {
 			if sha := strings.TrimSpace(string(out)); sha != "" {

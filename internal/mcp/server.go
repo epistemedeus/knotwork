@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -273,13 +272,14 @@ func (s *Server) readResource(ctx context.Context, user domain.User, uri string)
 	switch {
 	case strings.HasPrefix(parts[2], "tree/"):
 		ref := strings.TrimPrefix(parts[2], "tree/")
-		//nolint:gosec // argv slice with a validated ref; no shell involved.
-		cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "ls-tree", "-r", "--name-only", ref)
-		out, err := cmd.CombinedOutput()
+		if err := gitengine.ValidateRef(ref); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid git ref"}
+		}
+		paths, err := s.Git.ListTree(ctx, repo.DiskPath, ref)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: "could not read tree"}
 		}
-		return textContent(string(out)), nil
+		return textContent(strings.Join(paths, "\n") + "\n"), nil
 	case strings.HasPrefix(parts[2], "diff/"):
 		number, err := strconv.ParseInt(strings.TrimPrefix(parts[2], "diff/"), 10, 64)
 		if err != nil {
@@ -289,13 +289,14 @@ func (s *Server) readResource(ctx context.Context, user domain.User, uri string)
 		if err != nil {
 			return nil, &rpcError{Code: -32602, Message: "merge request not found"}
 		}
-		//nolint:gosec // argv slice with a validated SHA; no shell involved.
-		cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "show", "--format=", "--patch", mr.HeadSHA)
-		out, err := cmd.CombinedOutput()
+		if err := gitengine.ValidateRef(mr.HeadSHA); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid merge request head commit"}
+		}
+		patch, err := s.Git.DiffRange(ctx, repo.DiskPath, "", mr.HeadSHA)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: "could not read diff"}
 		}
-		return textContent(string(out)), nil
+		return textContent(string(patch)), nil
 	default:
 		return nil, &rpcError{Code: -32602, Message: "unsupported resource"}
 	}

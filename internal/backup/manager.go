@@ -139,7 +139,7 @@ func (m *Manager) uploadBundle(ctx context.Context, repo domain.Repository) erro
 	_ = os.Remove(path)
 	defer func() { _ = os.Remove(path) }()
 
-	cmd := exec.CommandContext(ctx, m.Git.GitBinary, "-C", repo.DiskPath, "bundle", "create", path, "--all")
+	cmd := m.Git.Command(ctx, "-C", repo.DiskPath, "bundle", "create", path, "--all")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git bundle: %w: %s", err, string(out))
 	}

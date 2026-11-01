@@ -20,6 +20,8 @@ type HTTPHandler struct {
 	UserFromRequest func(r *http.Request) (domain.User, bool)
 	Role            func(ctx context.Context, repo domain.Repository, user domain.User) (string, error)
 	Logger          *slog.Logger
+	Limiter         *ConcurrencyLimiter
+	MaxPushSize     int64
 }
 
 // Register installs catch-all GET/POST handlers. Git clone URLs live at the
@@ -47,13 +49,20 @@ func parseGitRequest(r *http.Request) (gitRequest, bool) {
 	if repo == "" {
 		return gitRequest{}, false
 	}
+	if !repoSegmentPattern.MatchString(owner) || !repoSegmentPattern.MatchString(repo) || strings.HasPrefix(owner, "-") || strings.HasPrefix(repo, "-") {
+		return gitRequest{}, false
+	}
 	switch {
 	case len(parts) == 4 && parts[2] == "info" && parts[3] == "refs":
+		service := r.URL.Query().Get("service")
+		if service != "" && service != "git-upload-pack" && service != "git-receive-pack" {
+			return gitRequest{}, false
+		}
 		return gitRequest{
 			owner:    owner,
 			repo:     repo,
 			endpoint: "info/refs",
-			write:    r.URL.Query().Get("service") == "git-receive-pack",
+			write:    service == "git-receive-pack",
 		}, true
 	case len(parts) == 3 && parts[2] == "git-upload-pack":
 		return gitRequest{owner: owner, repo: repo, endpoint: "git-upload-pack"}, true
@@ -105,6 +114,14 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		if h.Manager != nil {
 			_ = h.Manager.InstallHooks(repo.DiskPath)
 		}
+		// Enforce maximum packfile size at the HTTP layer (100MB default).
+		maxPushSize := h.MaxPushSize
+		if maxPushSize <= 0 {
+			maxPushSize = 100 * 1024 * 1024 // 100MB
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxPushSize)
+		}
 	} else if repo.IsPrivate {
 		if !authed {
 			unauthorized(w)
@@ -117,21 +134,51 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 	// Public reads may still carry an identity; the hook server uses it for
 	// audit trails even though no authorization is required.
 
-	env := []string{
-		"GIT_PROJECT_ROOT=" + h.Manager.Root,
-		"GIT_HTTP_EXPORT_ALL=1",
-		"PATH_INFO=" + r.URL.Path,
-		"REMOTE_USER=" + user.Username,
-		"KNOTWORK_ACTOR_ID=" + user.ID,
-		"KNOTWORK_REPO_PATH=" + repo.DiskPath,
-		"KNOTWORK_SOCKET=" + h.Manager.SocketPath,
-		"KNOTWORK_BINARY=" + h.Manager.SelfBinary,
+	// Concurrency limiting for git processes to prevent system resource exhaustion.
+	limiter := h.Limiter
+	if limiter == nil && h.Manager != nil {
+		limiter = h.Manager.Limiter
 	}
+	if limiter != nil {
+		if err := limiter.Acquire(r.Context()); err != nil {
+			if h.Logger != nil {
+				h.Logger.Warn("git process concurrency limit reached", "error", err)
+			}
+			http.Error(w, "server busy: too many concurrent git operations", http.StatusServiceUnavailable)
+			return
+		}
+		defer limiter.Release()
+	}
+
+	gitBin := "git"
+	if h.Manager != nil && h.Manager.GitBinary != "" {
+		gitBin = h.Manager.GitBinary
+	}
+
+	env := append(SafeGitEnv(gitBin),
+		"GIT_PROJECT_ROOT="+h.Manager.Root,
+		"GIT_HTTP_EXPORT_ALL=1",
+		"PATH_INFO="+r.URL.Path,
+		"REMOTE_USER="+user.Username,
+		"KNOTWORK_ACTOR_ID="+user.ID,
+		"KNOTWORK_REPO_PATH="+repo.DiskPath,
+		"KNOTWORK_SOCKET="+h.Manager.SocketPath,
+		"KNOTWORK_BINARY="+h.Manager.SelfBinary,
+	)
+
+	args := []string{
+		"-c", "receive.fsckObjects=true",
+		"-c", "fetch.fsckObjects=true",
+		"-c", "transfer.fsckObjects=true",
+		"-c", "receive.maxInputSize=104857600",
+		"http-backend",
+	}
+
 	handler := &cgi.Handler{
-		Path:       h.Manager.GitBinary,
-		Args:       []string{"http-backend"},
+		Path:       gitBin,
+		Args:       args,
 		Env:        env,
-		InheritEnv: []string{"PATH", "HOME", "LANG", "TZ"},
+		InheritEnv: []string{"LANG", "TZ"}, // Do NOT inherit HOME or ambient configs
 	}
 	handler.ServeHTTP(w, r)
 }
