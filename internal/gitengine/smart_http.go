@@ -102,6 +102,9 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		if !h.canWrite(r.Context(), repo, user, w) {
 			return
 		}
+		if h.Manager != nil {
+			_ = h.Manager.InstallHooks(repo.DiskPath)
+		}
 	} else if repo.IsPrivate {
 		if !authed {
 			unauthorized(w)
@@ -122,6 +125,7 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		"KNOTWORK_ACTOR_ID=" + user.ID,
 		"KNOTWORK_REPO_PATH=" + repo.DiskPath,
 		"KNOTWORK_SOCKET=" + h.Manager.SocketPath,
+		"KNOTWORK_BINARY=" + h.Manager.SelfBinary,
 	}
 	handler := &cgi.Handler{
 		Path:       h.Manager.GitBinary,

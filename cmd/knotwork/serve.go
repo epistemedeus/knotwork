@@ -58,6 +58,13 @@ func runServe(args []string) int {
 		log.Error("resolve executable", "error", err)
 		return 1
 	}
+	if strings.Contains(self, "go-build") {
+		if abs, err := filepath.Abs("bin/knotwork"); err == nil {
+			if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+				self = abs
+			}
+		}
+	}
 	gitMgr, err := gitengine.NewManager(cfg.RepoRoot, cfg.GitBinary, self, cfg.SocketPath)
 	if err != nil {
 		log.Error("git engine init failed", "error", err)
