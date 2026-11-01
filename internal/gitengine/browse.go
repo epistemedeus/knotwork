@@ -43,6 +43,16 @@ func ValidatePath(p string) error {
 	return nil
 }
 
+// IsEmpty reports whether diskPath has any commits.
+func (m *Manager) IsEmpty(ctx context.Context, diskPath string) (bool, error) {
+	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "rev-list", "-n", "1", "--all")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git rev-list: %w", err)
+	}
+	return len(bytes.TrimSpace(out)) == 0, nil
+}
+
 // ListTree returns every blob path in ref, sorted by Git.
 func (m *Manager) ListTree(ctx context.Context, diskPath, ref string) ([]string, error) {
 	if ref == "" {
@@ -56,6 +66,9 @@ func (m *Manager) ListTree(ctx context.Context, diskPath, ref string) ([]string,
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if empty, emptyErr := m.IsEmpty(ctx, diskPath); emptyErr == nil && empty {
+			return []string{}, nil
+		}
 		return nil, fmt.Errorf("git ls-tree: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	entries := strings.Split(string(out), "\x00")

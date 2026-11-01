@@ -18,7 +18,11 @@ import (
 	"knotwork/internal/gitengine"
 )
 
-var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+var (
+	repoNamePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+	ErrInvalidRepoName = errors.New("name must match [A-Za-z0-9][A-Za-z0-9._-]*")
+	ErrRepoConflict    = errors.New("repository already exists")
+)
 
 func (s *Server) registerAPI() {
 	s.mux.Handle("GET /api/repos", s.Auth.RequireUser(http.HandlerFunc(s.listRepos)))
@@ -38,6 +42,27 @@ func (s *Server) registerAPI() {
 	s.mux.Handle("DELETE /api/admin/peers/{domain}", s.Auth.RequireAdmin(http.HandlerFunc(s.adminDeletePeer)))
 }
 
+func (s *Server) initializeRepo(ctx context.Context, user domain.User, name, description string, private bool) (domain.Repository, error) {
+	if !repoNamePattern.MatchString(name) {
+		return domain.Repository{}, ErrInvalidRepoName
+	}
+	path := user.Username + "/" + name
+	if _, err := s.DB.GetRepoByPath(ctx, path); err == nil {
+		return domain.Repository{}, ErrRepoConflict
+	}
+	diskPath, err := s.Git.Init(ctx, path)
+	if err != nil {
+		s.Log.Error("git init failed", "path", path, "error", err)
+		return domain.Repository{}, fmt.Errorf("could not create repository: %w", err)
+	}
+	repo, err := s.DB.CreateRepo(ctx, user.ID, name, description, path, diskPath, private)
+	if err != nil {
+		_ = s.Git.Prune(path)
+		return domain.Repository{}, fmt.Errorf("could not record repository: %w", err)
+	}
+	return repo, nil
+}
+
 func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 	user, _ := s.Auth.UserFromRequest(r)
 	var in struct {
@@ -49,29 +74,25 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if !repoNamePattern.MatchString(in.Name) {
-		writeError(w, http.StatusBadRequest, "name must match [A-Za-z0-9][A-Za-z0-9._-]*")
-		return
-	}
-	path := user.Username + "/" + in.Name
-	if _, err := s.DB.GetRepoByPath(r.Context(), path); err == nil {
-		writeError(w, http.StatusConflict, "repository already exists")
-		return
-	}
 	private := true
 	if in.Private != nil {
 		private = *in.Private
 	}
-	diskPath, err := s.Git.Init(r.Context(), path)
+	repo, err := s.initializeRepo(r.Context(), user, in.Name, in.Description, private)
 	if err != nil {
-		s.Log.Error("git init failed", "path", path, "error", err)
+		if errors.Is(err, ErrInvalidRepoName) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, ErrRepoConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "could not record repository") {
+			writeError(w, http.StatusConflict, "could not record repository")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not create repository")
-		return
-	}
-	repo, err := s.DB.CreateRepo(r.Context(), user.ID, in.Name, in.Description, path, diskPath, private)
-	if err != nil {
-		_ = s.Git.Prune(path)
-		writeError(w, http.StatusConflict, "could not record repository")
 		return
 	}
 	writeJSON(w, http.StatusCreated, repo)

@@ -43,6 +43,19 @@ func TestRepositoryRoundTrip(t *testing.T) {
 			t.Fatalf("hook %s missing or not executable: %v", hook, err)
 		}
 	}
+
+	empty, err := mgr.IsEmpty(ctx, disk)
+	if err != nil || !empty {
+		t.Fatalf("IsEmpty before push: %v, %v", empty, err)
+	}
+	emptyPaths, err := mgr.ListTree(ctx, disk, "main")
+	if err != nil {
+		t.Fatalf("ListTree on empty repo: %v", err)
+	}
+	if len(emptyPaths) != 0 {
+		t.Fatalf("expected 0 paths on empty repo, got %v", emptyPaths)
+	}
+
 	// The generated hooks expect a live daemon socket; disable them for the
 	// fixture pushes while still exercising the real bare repository.
 	gitCmd(t, disk, "config", "core.hooksPath", os.DevNull)
@@ -61,6 +74,11 @@ func TestRepositoryRoundTrip(t *testing.T) {
 	gitCmd(t, work, "commit", "-qm", "initial")
 	gitCmd(t, work, "remote", "add", "origin", disk)
 	gitCmd(t, work, "push", "-q", "origin", "main")
+
+	emptyAfterPush, err := mgr.IsEmpty(ctx, disk)
+	if err != nil || emptyAfterPush {
+		t.Fatalf("IsEmpty after push: %v, %v", emptyAfterPush, err)
+	}
 
 	paths, err := mgr.ListTree(ctx, disk, "main")
 	if err != nil {

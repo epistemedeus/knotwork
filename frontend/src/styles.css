@@ -29,6 +29,11 @@
   flex: 1;
 }
 
+.site-header nav .new-repo-link {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.75rem;
+}
+
 .site-footer {
   border-top: 1px solid var(--kw-border);
   margin-top: 3rem;
@@ -74,6 +79,14 @@
   gap: 1rem;
 }
 
+.repo-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
 .repo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
@@ -108,6 +121,39 @@
 
 .clone summary {
   cursor: pointer;
+}
+
+details pre {
+  overflow: auto;
+}
+
+.empty-repo {
+  margin-block: 1.5rem 2rem;
+  padding: 1.5rem;
+}
+
+.empty-repo h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.instructions-section {
+  margin-top: 1.25rem;
+}
+
+.instructions-section h3 {
+  font-size: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.instructions-section pre,
+.empty-repo-instructions pre {
+  margin-top: 0.5rem;
+  background: var(--kw-surface);
+  border: 1px solid var(--kw-border);
+  border-radius: var(--kw-radius);
+  padding: 0.75rem 1rem;
+  overflow: auto;
 }
 
 .repo-browser {
@@ -185,6 +231,92 @@
   gap: 2rem;
 }
 
+.new-repo-form {
+  max-width: 36rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-group label,
+.form-label {
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+
+.form-group .required {
+  color: #b42318;
+}
+
+.repo-name-input-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.owner-prefix {
+  font-size: 1rem;
+  color: var(--kw-muted);
+  font-weight: 500;
+  user-select: none;
+}
+
+.repo-name-input-group input {
+  flex: 1;
+}
+
+.field-hint {
+  font-size: 0.825rem;
+  color: var(--kw-muted);
+  margin-top: 0.2rem;
+}
+
+.visibility-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border: 1px solid var(--kw-border);
+  border-radius: var(--kw-radius);
+  padding: 0.75rem 1rem;
+  background: var(--kw-surface);
+}
+
+.visibility-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  cursor: pointer;
+}
+
+.visibility-option input[type="radio"] {
+  margin-top: 0.25rem;
+  cursor: pointer;
+}
+
+.visibility-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.visibility-text strong {
+  font-size: 0.95rem;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
 .log {
   background: #101418;
   color: #e6edf3;
@@ -197,10 +329,6 @@
   font-family: var(--kw-mono);
   font-size: 0.86rem;
   line-height: 1.5;
-}
-
-details pre {
-  overflow: auto;
 }
 
 @media (max-width: 720px) {

@@ -73,6 +73,10 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitRequest) {
+	if h.RepoByPath == nil {
+		http.NotFound(w, r)
+		return
+	}
 	repoPath := req.owner + "/" + req.repo
 
 	repo, err := h.RepoByPath(r.Context(), repoPath)
@@ -154,6 +158,7 @@ func (h *HTTPHandler) canRead(ctx context.Context, repo domain.Repository, user 
 }
 
 func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="Knotwork", device_flow="/auth/device"`)
+	w.Header().Set("WWW-Authenticate", `Basic realm="Knotwork"`)
+	w.Header().Add("WWW-Authenticate", `Bearer realm="Knotwork", device_flow="/auth/device"`)
 	http.Error(w, "authentication required", http.StatusUnauthorized)
 }

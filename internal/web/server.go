@@ -42,6 +42,8 @@ func (s *Server) Build() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	s.mux.HandleFunc("GET /{$}", s.home)
+	s.mux.Handle("GET /repos/new", s.Auth.RequireUser(http.HandlerFunc(s.newRepoPage)))
+	s.mux.Handle("POST /repos/new", s.Auth.RequireUser(http.HandlerFunc(s.createRepoForm)))
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}", s.repoPage)
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}/merge-requests/{number}", s.mrPage)
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}/pipelines/{id}", s.pipelinePage)

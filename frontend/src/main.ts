@@ -75,8 +75,37 @@ async function initRepoBrowser() {
   }
 
   if (paths.length === 0) {
-    statusMessage(treeHost, 'This repository has no files yet. Push a commit to get started.')
-    statusMessage(view, 'Nothing to display.')
+    statusMessage(treeHost, 'This repository has no files yet.')
+    const cloneURL =
+      document
+        .querySelector('.clone code')
+        ?.textContent?.trim()
+        .replace(/^git clone\s+/, '') || `${window.location.origin}/${repo}.git`
+    const defaultBranch = ref || 'main'
+    const repoName = repo.split('/')[1] || repo
+
+    view.replaceChildren()
+    const container = document.createElement('div')
+    container.className = 'empty-repo-instructions'
+    container.innerHTML = `
+      <h3>Get started with this repository</h3>
+      <p class="meta">Authorize your Git client with Knotwork CLI:</p>
+      <pre><code>knotwork auth login</code></pre>
+      <p class="meta">Create a new repository on the command line:</p>
+      <pre><code>mkdir ${repoName}
+cd ${repoName}
+git init -b ${defaultBranch}
+echo "# ${repoName}" >> README.md
+git add README.md
+git commit -m "first commit"
+git remote add origin ${cloneURL}
+git push -u origin ${defaultBranch}</code></pre>
+      <p class="meta">Or push an existing repository:</p>
+      <pre><code>git remote add origin ${cloneURL}
+git branch -M ${defaultBranch}
+git push -u origin ${defaultBranch}</code></pre>
+    `
+    view.append(container)
     return
   }
 
@@ -235,6 +264,72 @@ function initPipeline() {
   }
 }
 
+function initNewRepoForm() {
+  const form = el<HTMLFormElement>('new-repo-form')
+  if (!form) return
+  const errorBox = el<HTMLElement>('new-repo-error')
+  const submitBtn = el<HTMLButtonElement>('create-repo-btn')
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (errorBox) {
+      errorBox.style.display = 'none'
+      errorBox.textContent = ''
+    }
+
+    const nameInput = form.elements.namedItem('name') as HTMLInputElement | null
+    const descInput = form.elements.namedItem('description') as HTMLInputElement | null
+    const visInput = form.querySelector<HTMLInputElement>('input[name="visibility"]:checked')
+
+    const name = nameInput?.value.trim() ?? ''
+    const description = descInput?.value.trim() ?? ''
+    const isPrivate = visInput?.value !== 'public'
+
+    if (!name) {
+      if (errorBox) {
+        errorBox.textContent = 'Repository name is required.'
+        errorBox.style.display = 'block'
+      }
+      return
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true
+      submitBtn.textContent = 'Creating repository…'
+    }
+
+    try {
+      const res = await fetch('/api/repos', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name,
+          description,
+          private: isPrivate,
+        }),
+      })
+
+      if (!res.ok) {
+        throw new Error(await readError(res))
+      }
+
+      const data = (await res.json()) as { path: string }
+      window.location.href = `/repos/${data.path}`
+    } catch (err) {
+      if (submitBtn) {
+        submitBtn.disabled = false
+        submitBtn.textContent = 'Create repository'
+      }
+      if (errorBox) {
+        errorBox.textContent = (err as Error).message || 'Failed to create repository'
+        errorBox.style.display = 'block'
+      }
+    }
+  })
+}
+
 function init() {
   switch (document.body.dataset.page) {
     case 'repo':
@@ -245,6 +340,9 @@ function init() {
       break
     case 'pipeline':
       initPipeline()
+      break
+    case 'new-repo':
+      initNewRepoForm()
       break
   }
 }

@@ -1,4 +1,7 @@
 # Knotwork developer tooling. Everything runs through mise; `make help` lists targets.
+-include .env
+export
+
 MISE ?= mise
 GO ?= $(MISE) exec -- go
 GOLANGCI ?= $(MISE) exec -- golangci-lint
