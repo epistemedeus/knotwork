@@ -25,3 +25,6 @@
 .idea/
 .vscode/
 frontend/node_modules/
+
+# harness-injected agent skills
+/skills/
