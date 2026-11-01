@@ -98,14 +98,13 @@ func (m *Manager) InstallHooks(diskPath string) error {
 : "${KNOTWORK_SOCKET:=%s}"
 export KNOTWORK_SOCKET
 
-BIN="${KNOTWORK_BINARY:-%s}"
+BIN=%s
+if [ -n "${KNOTWORK_BINARY:-}" ] && [ -x "$KNOTWORK_BINARY" ]; then
+	BIN="$KNOTWORK_BINARY"
+fi
 if [ ! -x "$BIN" ]; then
 	if command -v knotwork >/dev/null 2>&1; then
 		BIN="$(command -v knotwork)"
-	elif [ -x "./bin/knotwork" ]; then
-		BIN="./bin/knotwork"
-	elif [ -x "bin/knotwork" ]; then
-		BIN="bin/knotwork"
 	fi
 fi
 exec "$BIN" hook pre-receive
@@ -115,14 +114,13 @@ exec "$BIN" hook pre-receive
 : "${KNOTWORK_SOCKET:=%s}"
 export KNOTWORK_SOCKET
 
-BIN="${KNOTWORK_BINARY:-%s}"
+BIN=%s
+if [ -n "${KNOTWORK_BINARY:-}" ] && [ -x "$KNOTWORK_BINARY" ]; then
+	BIN="$KNOTWORK_BINARY"
+fi
 if [ ! -x "$BIN" ]; then
 	if command -v knotwork >/dev/null 2>&1; then
 		BIN="$(command -v knotwork)"
-	elif [ -x "./bin/knotwork" ]; then
-		BIN="./bin/knotwork"
-	elif [ -x "bin/knotwork" ]; then
-		BIN="bin/knotwork"
 	fi
 fi
 exec "$BIN" hook post-receive
