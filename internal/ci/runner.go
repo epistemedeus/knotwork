@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,7 +60,8 @@ func (d *DockerRunner) Run(ctx context.Context, job *PipelineJob, out io.Writer)
 	start := time.Now()
 	err := cmd.Run()
 	result := &JobResult{Duration: time.Since(start)}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
 	}

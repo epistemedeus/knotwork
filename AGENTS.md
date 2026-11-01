@@ -5,30 +5,44 @@ TypeScript UI. Module path is `knotwork`; the binary and CLI are `knotwork`.
 
 ## Verified commands
 
-Run tooling through mise (`mise exec -- ...`):
+Toolchains are pinned in `.mise.toml`; run them through `mise exec -- ...` or
+through the Makefile (`make help` lists targets). `make setup` installs the
+toolchains and frontend dependencies and enables the committed `.githooks`.
 
 ```sh
-mise install
-mise exec -- go build ./...          # all packages
-mise exec -- go build -o bin/knotwork ./cmd/knotwork
-mise exec -- go test ./...           # full suite
+make check                            # fmt-check, tidy-check, vet, lint, test, web-check
+make ci                               # check + race/shuffled tests (same gate as CI)
+make vuln                             # govulncheck ./...
+make build                            # web bundle + bin/knotwork
+make run                              # go run ./cmd/knotwork serve
+```
+
+Individual commands:
+
+```sh
+mise exec -- go build ./...
+mise exec -- go test ./...
 mise exec -- go test ./internal/ci -run TestParse -v   # single test
 mise exec -- go vet ./...
 mise exec -- golangci-lint run ./...
+mise exec -- golangci-lint fmt         # gofumpt + goimports
+mise exec -- govulncheck ./...
 ```
 
 Frontend (from `frontend/`):
 
 ```sh
 mise exec -- pnpm install
-mise exec -- pnpm build     # tsc --noEmit && vite build
-mise exec -- pnpm typecheck
+mise exec -- pnpm run check   # tsc --noEmit + biome check
+mise exec -- pnpm run lint:fix
+mise exec -- pnpm run build   # check, then vite build into internal/web/static
 ```
 
-`pnpm build` writes `internal/web/static/{app.js,app.css,chunks/}`, which is
+`pnpm run build` writes `internal/web/static/{app.js,app.css,chunks/}`, which is
 committed because `internal/web/static.go` embeds it with `go:embed`. Rebuild
 the frontend before `go build` if assets changed; plain `go build ./...` still
-works from a clean checkout because the output is committed.
+works from a clean checkout because the output is committed. CI rebuilds the
+bundle and fails if the committed output is stale.
 
 ## Layout
 
@@ -43,6 +57,9 @@ works from a clean checkout because the output is committed.
 - `internal/mcp`, `internal/manifest` — MCP server and app manifests.
 - `internal/web` — router, JSON API, HTML templates, static assets.
 - `frontend/` — Oat CSS, `@pierre/trees`, `@pierre/diffs`, `@pierre/highlights`.
+- `.golangci.yml`, `frontend/biome.json` — lint/format configuration.
+- `.githooks/` — pre-commit and pre-push gates (enabled by `make setup`).
+- `.github/workflows/ci.yml` — CI mirror of `make ci` plus bundle freshness.
 
 `docs/SRS.md` is authoritative; `docs/ARCHITECTURE.md` maps request flows.
 

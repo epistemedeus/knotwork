@@ -128,6 +128,7 @@ func (s *InboxService) ingestOffer(ctx context.Context, peer domain.Peer, activi
 	}
 
 	ref := fmt.Sprintf("refs/federated/mr/%d", result.Number)
+	//nolint:gosec // argv slice: the source is validated as https on the peer domain above.
 	cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "fetch", "--no-tags",
 		mr.SourceRepo, mr.SourceBranch+":"+ref)
 	if out, err := cmd.CombinedOutput(); err != nil {

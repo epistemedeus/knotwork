@@ -20,6 +20,9 @@
 /frontend/dist/
 *.tsbuildinfo
 
+# local test/coverage output
+/coverage.out
+
 # editor / OS
 .DS_Store
 .idea/

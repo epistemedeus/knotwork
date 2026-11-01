@@ -22,7 +22,7 @@ func testKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func TestSignVerifyRoundTrip(t *testing.T) {
 	pub, priv := testKey(t)
 	body := []byte(`{"type":"Offer"}`)
-	req, err := http.NewRequest(http.MethodPost, "https://peer.example/inbox", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://peer.example/inbox", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 func TestVerifyRejectsTamperedBody(t *testing.T) {
 	pub, priv := testKey(t)
 	body := []byte(`{"type":"Offer"}`)
-	req, _ := http.NewRequest(http.MethodPost, "https://peer.example/inbox", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://peer.example/inbox", http.NoBody)
 	if err := Sign(req, body, priv, "key"); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 func TestVerifyRejectsStaleDate(t *testing.T) {
 	pub, priv := testKey(t)
 	body := []byte(`{}`)
-	req, _ := http.NewRequest(http.MethodPost, "https://peer.example/inbox", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://peer.example/inbox", http.NoBody)
 	if err := Sign(req, body, priv, "key"); err != nil {
 		t.Fatal(err)
 	}

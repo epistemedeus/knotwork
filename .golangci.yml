@@ -1,0 +1,97 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errname
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - unnamedResult
+        - whyNoLint
+    gosec:
+      excludes:
+        # File paths are built from operator-configured data dirs, never from
+        # request input; see gitengine and backup call sites.
+        - G304
+        # git and docker are invoked with argv slices, never a shell.
+        - G204
+        # Stale blocklist: the Httpoxy fix landed in Go 1.6.3.
+        - G504
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-naming
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+    unparam:
+      check-exported: false
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - prealloc
+          - unparam
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      module-path: knotwork
+    goimports:
+      local-prefixes:
+        - knotwork
+  exclusions:
+    generated: lax

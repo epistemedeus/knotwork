@@ -22,7 +22,7 @@ func main() {
 	case "serve":
 		code = runServe(os.Args[2:])
 	case "status":
-		code = runStatus(os.Args[2:])
+		code = runStatus()
 	case "admin":
 		code = runAdmin(os.Args[2:])
 	case "auth":
@@ -72,7 +72,7 @@ func loadConfigAndDB(ctx context.Context) (config.Config, *database.DB, error) {
 	return cfg, store, nil
 }
 
-func runStatus(args []string) int {
+func runStatus() int {
 	ctx := context.Background()
 	cfg, store, err := loadConfigAndDB(ctx)
 	if err != nil {
@@ -114,11 +114,11 @@ func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.CommandContext(context.Background(), "open", url)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.CommandContext(context.Background(), "rundll32", "url.dll,FileProtocolHandler", url)
 	default:
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.CommandContext(context.Background(), "xdg-open", url)
 	}
 	_ = cmd.Start()
 }

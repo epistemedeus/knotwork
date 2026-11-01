@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	_ "modernc.org/sqlite"             // registers the "sqlite" database/sql driver
 )
 
 // TimeLayout is a fixed-width UTC layout so stored timestamps sort

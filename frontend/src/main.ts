@@ -1,6 +1,6 @@
 import '@knadh/oat/oat.min.css'
 import '@knadh/oat/oat.min.js'
-import { File, FileDiff, canUseWASM, parsePatchFiles } from '@pierre/diffs'
+import { canUseWASM, File, FileDiff, parsePatchFiles } from '@pierre/diffs'
 import { FileTree } from '@pierre/trees'
 import './styles.css'
 

@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
-
 	"knotwork/internal/database"
 	"knotwork/internal/domain"
 	"knotwork/internal/gitengine"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 type Manager struct {
@@ -111,14 +111,14 @@ func (m *Manager) BundleRepository(ctx context.Context, repo domain.Repository) 
 	var lastErr error
 	backoff := 2 * time.Second
 	for attempt := 1; attempt <= 3; attempt++ {
-		if err := m.uploadBundle(ctx, repo); err == nil {
+		err := m.uploadBundle(ctx, repo)
+		if err == nil {
 			if err := m.DB.MarkBundled(ctx, repo.ID); err != nil {
 				m.Log.Warn("mark bundled failed", "repo", repo.Path, "error", err)
 			}
 			return nil
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

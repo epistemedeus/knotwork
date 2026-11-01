@@ -74,12 +74,12 @@ func (m *Manager) Init(ctx context.Context, path string) (string, error) {
 	return disk, nil
 }
 
-// IsAncestor reports whether old is an ancestor of new (a fast-forward).
-func (m *Manager) IsAncestor(ctx context.Context, diskPath, old, new string) bool {
-	if old == "" || strings.Trim(old, "0") == "" {
+// IsAncestor reports whether oldSHA is an ancestor of newSHA (a fast-forward).
+func (m *Manager) IsAncestor(ctx context.Context, diskPath, oldSHA, newSHA string) bool {
+	if oldSHA == "" || strings.Trim(oldSHA, "0") == "" {
 		return true
 	}
-	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "merge-base", "--is-ancestor", old, new)
+	cmd := exec.CommandContext(ctx, m.GitBinary, "-C", diskPath, "merge-base", "--is-ancestor", oldSHA, newSHA)
 	return cmd.Run() == nil
 }
 
@@ -120,6 +120,7 @@ func selfBinary(configured string) (string, error) {
 
 func writeExecutable(path, body string) error {
 	tmp := path + ".tmp"
+	//nolint:gosec // hook scripts must be executable by the git user.
 	if err := os.WriteFile(tmp, []byte(body), 0o755); err != nil {
 		return err
 	}

@@ -106,7 +106,7 @@ func runAuth(args []string) int {
 
 func requestDeviceCode(client *http.Client, base string) (deviceCode, error) {
 	var out deviceCode
-	req, err := http.NewRequest(http.MethodPost, base+"/auth/device/code", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/auth/device/code", http.NoBody)
 	if err != nil {
 		return out, err
 	}
@@ -125,7 +125,7 @@ func requestDeviceCode(client *http.Client, base string) (deviceCode, error) {
 
 // pollDeviceToken returns pending="authorization_pending" or "slow_down" while
 // the user has not approved; pending is empty on success.
-func pollDeviceToken(ctx context.Context, client *http.Client, base, code string) (token string, pending string, err error) {
+func pollDeviceToken(ctx context.Context, client *http.Client, base, code string) (token, pending string, err error) {
 	form := url.Values{"device_code": {code}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/auth/device/token", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -160,7 +160,7 @@ func storeGitCredential(base, token string) error {
 		return err
 	}
 	payload := fmt.Sprintf("protocol=%s\nhost=%s\nusername=knotwork\npassword=%s\n\n", u.Scheme, u.Host, token)
-	cmd := exec.Command("git", "credential", "approve")
+	cmd := exec.CommandContext(context.Background(), "git", "credential", "approve")
 	cmd.Stdin = bytes.NewBufferString(payload)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/oauth2"
-
 	"knotwork/internal/config"
 	"knotwork/internal/database"
 	"knotwork/internal/domain"
+
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -83,6 +83,7 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 	verifier := oauth2.GenerateVerifier()
 	next := safeNext(r.URL.Query().Get("next"))
 	payload, _ := json.Marshal(oauthState{State: state, Nonce: nonce, Verifier: verifier, Next: next})
+	//nolint:gosec // Secure follows the configured base URL; HttpOnly and SameSite are set.
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthCookie,
 		Value:    base64.RawURLEncoding.EncodeToString(payload),
@@ -111,6 +112,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid login state", http.StatusBadRequest)
 		return
 	}
+	//nolint:gosec // clearing a cookie; Secure follows the configured base URL.
 	http.SetCookie(w, &http.Cookie{Name: oauthCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 
 	if r.URL.Query().Get("state") != state.State {
@@ -167,6 +169,7 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.DB.DeleteSession(r.Context(), c.Value)
 	}
+	//nolint:gosec // clearing a cookie; Secure follows the configured base URL.
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secure()})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -254,6 +257,7 @@ func (s *Service) RequireSCIM(next http.Handler) http.Handler {
 func (s *Service) secure() bool { return strings.HasPrefix(s.Cfg.BaseURL, "https://") }
 
 func (s *Service) setSessionCookie(w http.ResponseWriter, token string, ttl time.Duration) {
+	//nolint:gosec // Secure follows the configured base URL; HttpOnly and SameSite are set.
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,

@@ -1,5 +1,7 @@
 # Knotwork
 
+[![CI](https://github.com/tachyons/knotwork/actions/workflows/ci.yml/badge.svg)](https://github.com/tachyons/knotwork/actions/workflows/ci.yml)
+
 Knotwork is a single-node, self-hosted Git collaboration server. It combines
 OIDC-only authentication, Git Smart HTTP, merge requests, embedded Docker CI,
 SCIM provisioning, S3 backups, an MCP endpoint, and opt-in ForgeFed federation
@@ -111,24 +113,43 @@ approve before any container starts.
 
 ## Development
 
-```sh
-mise install
+Toolchains are pinned in `.mise.toml`. `make setup` installs them, installs the
+frontend dependencies, and enables the committed git hooks. `make help` lists
+every target.
 
-make test                 # go test ./...
-make vet                  # go vet ./...
-make lint                 # golangci-lint run ./...
-make build                # pnpm build + go build ./cmd/knotwork
+```sh
+make setup                # mise install + pnpm install + git hooks
+make check                # fmt, tidy, vet, lint, tests, frontend checks
+make ci                   # full gate: check + race/shuffled tests
+make vuln                 # govulncheck
+make build                # web bundle + bin/knotwork
 make run                  # go run ./cmd/knotwork serve
 ```
 
-Frontend commands:
+The pre-commit hook lints staged Go and frontend files; the pre-push hook runs
+the full test suite, `golangci-lint`, and the frontend checks. Go code is
+formatted with `gofumpt` and `goimports` through `golangci-lint`:
 
 ```sh
-cd frontend
-pnpm install
-pnpm dev                  # Vite dev server
-pnpm build                # type-check + emit into internal/web/static
+make fmt                  # apply formatting
+make fmt-check            # fail if formatting is stale
+make lint-fix             # apply safe lint fixes
 ```
+
+Frontend commands (from `frontend/`):
+
+```sh
+pnpm dev                  # Vite dev server
+pnpm run check            # tsc --noEmit + biome check
+pnpm run lint:fix         # apply Biome fixes
+pnpm run build            # run check, then emit into internal/web/static
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the same gate on every push
+and pull request: formatting, `go.mod` tidiness, vet, `golangci-lint`,
+`govulncheck`, race-enabled tests, frontend type-check/lint, and a check that
+the committed `internal/web/static` bundle matches the current frontend
+sources.
 
 The frontend is vanilla TypeScript with Vite. It uses [Oat](https://oat.ink)
 for semantic CSS, [`@pierre/trees`](https://trees.software) for the file tree,

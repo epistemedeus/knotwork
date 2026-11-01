@@ -273,6 +273,7 @@ func (s *Server) readResource(ctx context.Context, user domain.User, uri string)
 	switch {
 	case strings.HasPrefix(parts[2], "tree/"):
 		ref := strings.TrimPrefix(parts[2], "tree/")
+		//nolint:gosec // argv slice with a validated ref; no shell involved.
 		cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "ls-tree", "-r", "--name-only", ref)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -288,6 +289,7 @@ func (s *Server) readResource(ctx context.Context, user domain.User, uri string)
 		if err != nil {
 			return nil, &rpcError{Code: -32602, Message: "merge request not found"}
 		}
+		//nolint:gosec // argv slice with a validated SHA; no shell involved.
 		cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "show", "--format=", "--patch", mr.HeadSHA)
 		out, err := cmd.CombinedOutput()
 		if err != nil {

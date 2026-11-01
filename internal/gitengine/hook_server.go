@@ -55,10 +55,12 @@ func NewHookServer(store *database.DB, manager *Manager, log *slog.Logger) *Hook
 
 func (s *HookServer) Start(socketPath string) error {
 	_ = os.Remove(socketPath)
-	ln, err := net.Listen("unix", socketPath)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		return err
 	}
+	//nolint:gosec // 0660 lets the git user and the daemon group share the socket.
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		_ = ln.Close()
 		return err
@@ -173,7 +175,7 @@ func DialHook(socketPath string, req HookRequest) (HookResponse, error) {
 	if socketPath == "" {
 		return HookResponse{}, errors.New("KNOTWORK_SOCKET is not set")
 	}
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "unix", socketPath)
 	if err != nil {
 		return HookResponse{}, err
 	}

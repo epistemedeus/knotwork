@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"knotwork/internal/config"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-
-	"knotwork/internal/config"
 )
 
 // Store is the blob boundary: S3-compatible in production, local disk in dev.

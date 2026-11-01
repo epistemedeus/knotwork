@@ -1,6 +1,7 @@
 [tools]
 go = "1.27.3"
-golangci-lint = "latest"
+golangci-lint = "2.15.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
 node = "26.10.0"
 pnpm = "12.16.1"
 

@@ -23,6 +23,7 @@ func (s *Server) loadRepo(w http.ResponseWriter, r *http.Request) (domain.Reposi
 	}
 	if repo.IsPrivate && role == "" {
 		if !authed {
+			//nolint:gosec // next is the request path on our own origin, not a user-supplied URL.
 			http.Redirect(w, r, "/auth/login?next="+r.URL.Path, http.StatusFound)
 			return domain.Repository{}, domain.User{}, "", false
 		}

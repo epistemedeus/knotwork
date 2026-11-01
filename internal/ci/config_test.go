@@ -1,6 +1,7 @@
 package ci
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +80,7 @@ func TestLoadPrefersKnotworkFile(t *testing.T) {
 
 func TestLoadFallsBackToLegacyAndReportsMissing(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := Load(dir); err != ErrNoConfig {
+	if _, _, err := Load(dir); !errors.Is(err, ErrNoConfig) {
 		t.Fatalf("err = %v, want ErrNoConfig", err)
 	}
 	body := "job:\n  image: alpine\n  script: echo legacy\n"

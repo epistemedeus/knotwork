@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"knotwork/internal/config"
+
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
-
-	"knotwork/internal/config"
 )
 
 type OIDC struct {

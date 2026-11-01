@@ -1,0 +1,26 @@
+#!/bin/sh
+# Full verification before pushing. Enable with `make hooks`.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+run() {
+	if command -v mise >/dev/null 2>&1; then
+		mise exec -- "$@"
+	else
+		"$@"
+	fi
+}
+
+echo "pre-push: go test ./..."
+run go test ./...
+
+echo "pre-push: golangci-lint ./..."
+run golangci-lint run ./...
+
+if [ -d frontend/node_modules ]; then
+	echo "pre-push: frontend typecheck + Biome"
+	(cd frontend && run pnpm run check)
+else
+	echo "pre-push: frontend/node_modules missing, skipping frontend checks (make setup)"
+fi

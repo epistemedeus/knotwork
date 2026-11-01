@@ -276,6 +276,7 @@ func (s *Server) approvePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pipeline, _ = s.DB.GetPipeline(r.Context(), pipeline.ID)
+	//nolint:gosec // the pipeline must outlive this request; cancel is bounded by the timeout.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		defer cancel()

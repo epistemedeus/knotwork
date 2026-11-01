@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOFLAGS: -trimpath
+
+jobs:
+  go:
+    name: Go (format, lint, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v5
+        with:
+          install: true
+          cache: true
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - name: Check Go formatting
+        run: make fmt-check
+
+      - name: Check go.mod/go.sum are tidy
+        run: make tidy-check
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        run: make lint
+
+      - name: Scan dependencies for vulnerabilities
+        run: make vuln
+
+      - name: Test with race detector
+        run: mise exec -- go test -race -shuffle=on -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Build binary
+        run: mise exec -- go build -o bin/knotwork ./cmd/knotwork
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (types, lint, bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v5
+        with:
+          install: true
+          cache: true
+
+      - name: Cache pnpm store
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check and lint
+        run: pnpm run check
+
+      - name: Build bundle
+        run: pnpm run build
+
+      - name: Verify committed bundle is current
+        working-directory: .
+        run: |
+          if [ -n "$(git status --porcelain -- internal/web/static)" ]; then
+            git status --porcelain -- internal/web/static
+            echo "::error::internal/web/static is stale. Run 'make web-build' and commit the result."
+            exit 1
+          fi
+
+  ci:
+    name: CI gate
+    if: always()
+    needs: [go, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all jobs passed
+        run: |
+          echo "go: ${{ needs.go.result }}"
+          echo "frontend: ${{ needs.frontend.result }}"
+          if [ "${{ needs.go.result }}" != "success" ] || [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "::error::One or more CI jobs did not succeed."
+            exit 1
+          fi

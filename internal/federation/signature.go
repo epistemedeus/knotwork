@@ -34,8 +34,8 @@ func Sign(req *http.Request, body []byte, key ed25519.PrivateKey, keyID string) 
 	}
 	sig := ed25519.Sign(key, []byte(signing))
 	req.Header.Set("Signature", fmt.Sprintf(
-		`keyId="%s",algorithm="ed25519",headers="%s",signature="%s"`,
-		keyID, strings.Join(headers, " "), base64.StdEncoding.EncodeToString(sig)))
+		`keyId=%q,algorithm=%q,headers=%q,signature=%q`,
+		keyID, "ed25519", strings.Join(headers, " "), base64.StdEncoding.EncodeToString(sig)))
 	return nil
 }
 

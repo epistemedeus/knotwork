@@ -108,6 +108,7 @@ func runServe(args []string) int {
 				log.Warn("could not create pipeline", "repo", repo.Path, "ref", update.Ref, "error", err)
 				continue
 			}
+			//nolint:gosec // the pipeline must outlive the hook request; cancel is bounded by the timeout.
 			go func(p domain.Pipeline) {
 				runCtx, cancel := context.WithTimeout(context.Background(), time.Hour)
 				defer cancel()
