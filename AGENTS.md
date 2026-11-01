@@ -3,6 +3,29 @@
 Knotwork is a single-node Git collaboration server in Go with a vanilla
 TypeScript UI. Module path is `knotwork`; the binary and CLI are `knotwork`.
 
+## Product and engineering principles
+
+- Optimize for solo developers and small organizations (under 100 users). One
+  binary, SQLite, and local disk are the default; PostgreSQL, S3, federation,
+  SCIM, apps, and MCP are opt-in. Do not add mandatory services or daemons.
+- Performance is a feature. Measure before optimizing; avoid N+1 queries,
+  paginate unbounded lists, lazy-load heavy assets, and keep first-load JS
+  within budget. Regressions are bugs.
+- Standard library first. Use a maintained, well-established library only when
+  stdlib is insufficient; never hand-roll protocols, crypto, or parsers.
+- Less is more. Every surface needs an owner, docs, and tests. Hide disabled
+  features instead of shipping dead links; delete code that does not earn its
+  keep.
+- Apps and agents are first-class actors. Give them scoped credentials, audit
+  trails, attribution in the UI, and server-rendered integration surfaces. MCP
+  is the primary agent interface; keep it scoped and documented.
+- Storage is an interface. New relational code goes behind domain-scoped store
+  interfaces with per-dialect SQL; new Git access goes behind
+  `gitengine.Storage`. Do not assume `Repository.DiskPath` in new code.
+- No third-party JavaScript in the Knotwork origin. Integrate through webhooks,
+  server-rendered status, and outbound links; the CSP allows only the Vite
+  bundle.
+
 ## Verified commands
 
 Toolchains are pinned in `.mise.toml`; run them through `mise exec -- ...` or
