@@ -22,11 +22,18 @@ func RunHook(kind string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "knotwork: cannot determine repository directory")
 		return 1
 	}
+	repoDir := os.Getenv("KNOTWORK_REPO_PATH")
+	if repoDir == "" {
+		repoDir = dir
+	}
 	req := HookRequest{
-		Kind:    kind,
-		RepoDir: dir,
-		ActorID: os.Getenv("KNOTWORK_ACTOR_ID"),
-		Refs:    refs,
+		Kind:           kind,
+		RepoDir:        repoDir,
+		ActorID:        os.Getenv("KNOTWORK_ACTOR_ID"),
+		Refs:           refs,
+		ObjectDir:      os.Getenv("GIT_OBJECT_DIRECTORY"),
+		AltObjectDirs:  os.Getenv("GIT_ALTERNATE_OBJECT_DIRECTORIES"),
+		QuarantinePath: os.Getenv("GIT_QUARANTINE_PATH"),
 	}
 	resp, err := DialHook(os.Getenv("KNOTWORK_SOCKET"), req)
 	if err != nil {

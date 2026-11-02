@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +25,13 @@ type RefUpdate struct {
 }
 
 type HookRequest struct {
-	Kind    string      `json:"kind"` // "pre-receive" or "post-receive"
-	RepoDir string      `json:"repo_dir"`
-	ActorID string      `json:"actor_id"`
-	Refs    []RefUpdate `json:"refs"`
+	Kind           string      `json:"kind"` // "pre-receive" or "post-receive"
+	RepoDir        string      `json:"repo_dir"`
+	ActorID        string      `json:"actor_id"`
+	Refs           []RefUpdate `json:"refs"`
+	ObjectDir      string      `json:"object_dir,omitempty"`
+	AltObjectDirs  string      `json:"alt_object_dirs,omitempty"`
+	QuarantinePath string      `json:"quarantine_path,omitempty"`
 }
 
 type HookResponse struct {
@@ -142,6 +146,7 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 	}
 
 	protected := splitBranches(repo.ProtectedBranches)
+	quarantineEnv := s.quarantineEnv(repo.DiskPath, req)
 	for _, update := range req.Refs {
 		branch, ok := strings.CutPrefix(update.Ref, "refs/heads/")
 		if !ok || !protected[branch] {
@@ -153,11 +158,71 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 		if update.New == strings.Repeat("0", len(update.New)) {
 			return HookResponse{Message: fmt.Sprintf("Remote rejected: Branch [%s] cannot be deleted", branch)}
 		}
-		if !s.manager.IsAncestor(ctx, repo.DiskPath, update.Old, update.New) {
+		if !s.manager.IsAncestor(ctx, repo.DiskPath, update.Old, update.New, quarantineEnv...) {
 			return HookResponse{Message: fmt.Sprintf("Remote rejected: non-fast-forward push to [%s]", branch)}
 		}
 	}
 	return HookResponse{OK: true}
+}
+
+func (s *HookServer) quarantineEnv(repoDiskPath string, req HookRequest) []string {
+	if req.ObjectDir == "" {
+		return nil
+	}
+	cleanObj := filepath.Clean(req.ObjectDir)
+	if !filepath.IsAbs(cleanObj) {
+		cleanObj = filepath.Clean(filepath.Join(repoDiskPath, cleanObj))
+	}
+	objectsRoot := filepath.Clean(filepath.Join(repoDiskPath, "objects"))
+
+	realObj := resolvePath(cleanObj)
+	realRoot := resolvePath(objectsRoot)
+
+	// Quarantine directory must reside strictly within the repository's objects folder
+	if realObj != realRoot && !strings.HasPrefix(realObj, realRoot+string(filepath.Separator)) {
+		s.log.Warn("quarantine object dir outside repository objects", "dir", req.ObjectDir, "repo", repoDiskPath)
+		return nil
+	}
+
+	env := []string{"GIT_OBJECT_DIRECTORY=" + cleanObj}
+	var validAlts []string
+	if req.AltObjectDirs != "" {
+		for _, alt := range filepath.SplitList(req.AltObjectDirs) {
+			cleanAlt := filepath.Clean(alt)
+			if !filepath.IsAbs(cleanAlt) {
+				cleanAlt = filepath.Clean(filepath.Join(repoDiskPath, cleanAlt))
+			}
+			realAlt := resolvePath(cleanAlt)
+			if realAlt == realRoot || strings.HasPrefix(realAlt, realRoot+string(filepath.Separator)) {
+				validAlts = append(validAlts, cleanAlt)
+			}
+		}
+	}
+	if len(validAlts) == 0 {
+		validAlts = []string{objectsRoot}
+	}
+	env = append(env, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+strings.Join(validAlts, string(filepath.ListSeparator)))
+
+	if req.QuarantinePath != "" {
+		cleanQuar := filepath.Clean(req.QuarantinePath)
+		if !filepath.IsAbs(cleanQuar) {
+			cleanQuar = filepath.Clean(filepath.Join(repoDiskPath, cleanQuar))
+		}
+		realQuar := resolvePath(cleanQuar)
+		if realQuar == realRoot || strings.HasPrefix(realQuar, realRoot+string(filepath.Separator)) {
+			env = append(env, "GIT_QUARANTINE_PATH="+cleanQuar)
+		}
+	}
+
+	return env
+}
+
+func resolvePath(p string) string {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	return clean
 }
 
 func splitBranches(csv string) map[string]bool {

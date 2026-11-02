@@ -191,7 +191,9 @@ func (m *Manager) configureRepo(ctx context.Context, diskPath string) error {
 }
 
 // IsAncestor reports whether oldSHA is an ancestor of newSHA (a fast-forward).
-func (m *Manager) IsAncestor(ctx context.Context, diskPath, oldSHA, newSHA string) bool {
+// Optional extraEnv (e.g. Git quarantine environment variables) can be supplied
+// so inbound commits quarantined by git-receive-pack are reachable.
+func (m *Manager) IsAncestor(ctx context.Context, diskPath, oldSHA, newSHA string, extraEnv ...string) bool {
 	if oldSHA == "" || strings.Trim(oldSHA, "0") == "" {
 		return true
 	}
@@ -202,6 +204,9 @@ func (m *Manager) IsAncestor(ctx context.Context, diskPath, oldSHA, newSHA strin
 		return false
 	}
 	cmd := m.Command(ctx, "-C", diskPath, "merge-base", "--is-ancestor", "--end-of-options", oldSHA, newSHA)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(cmd.Env, extraEnv...)
+	}
 	return cmd.Run() == nil
 }
 
