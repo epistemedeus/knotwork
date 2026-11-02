@@ -124,7 +124,21 @@ func (s *HookServer) handle(conn net.Conn) {
 		s.log.Warn("invalid hook request", "error", err)
 		return
 	}
+	if s.log != nil {
+		s.log.Debug("hook request received",
+			"kind", req.Kind,
+			"repo_dir", req.RepoDir,
+			"actor_id", req.ActorID,
+			"refs_count", len(req.Refs),
+			"has_quarantine", req.ObjectDir != "",
+		)
+	}
 	resp := s.authorize(req)
+	if !resp.OK && s.log != nil {
+		s.log.Debug("hook rejected push", "repo_dir", req.RepoDir, "reason", resp.Message)
+	} else if s.log != nil {
+		s.log.Debug("hook approved push", "repo_dir", req.RepoDir, "refs_count", len(req.Refs))
+	}
 	if err := json.NewEncoder(conn).Encode(resp); err != nil {
 		s.log.Warn("write hook response", "error", err)
 	}
@@ -154,8 +168,26 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 
 	protected := splitBranches(repo.ProtectedBranches)
 	quarantineEnv := s.quarantineEnv(repo.DiskPath, req)
+	if s.log != nil {
+		s.log.Debug("evaluating push policies",
+			"repo", repo.Path,
+			"actor", user.Username,
+			"role", role,
+			"protected_branches", repo.ProtectedBranches,
+		)
+	}
 	for _, update := range req.Refs {
 		branch, ok := strings.CutPrefix(update.Ref, "refs/heads/")
+		isProtected := ok && protected[branch]
+		if s.log != nil {
+			s.log.Debug("evaluating ref update",
+				"ref", update.Ref,
+				"old", update.Old,
+				"new", update.New,
+				"branch", branch,
+				"is_protected", isProtected,
+			)
+		}
 		if !ok || !protected[branch] {
 			continue
 		}

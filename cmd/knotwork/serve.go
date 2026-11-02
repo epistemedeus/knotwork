@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -20,11 +20,22 @@ import (
 	"knotwork/internal/domain"
 	"knotwork/internal/federation"
 	"knotwork/internal/gitengine"
+	"knotwork/internal/logging"
 	"knotwork/internal/mcp"
 	"knotwork/internal/web"
 )
 
-func runServe(_ []string) int {
+func runServe(args []string) int {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	verbose := flags.Bool("v", false, "Enable verbose/debug logging")
+	verboseLong := flags.Bool("verbose", false, "Enable verbose/debug logging")
+	debug := flags.Bool("debug", false, "Enable debug logging")
+	logLevel := flags.String("log-level", "", "Log level (debug, info, warn, error)")
+	logFormat := flags.String("log-format", "", "Log format (text, json)")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -35,9 +46,20 @@ func runServe(_ []string) int {
 	}
 	defer func() { _ = store.Close() }()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	if *verbose || *verboseLong || *debug {
+		cfg.LogLevel = "debug"
+	}
+	if *logLevel != "" {
+		cfg.LogLevel = *logLevel
+	}
+	if *logFormat != "" {
+		cfg.LogFormat = *logFormat
+	}
+
+	log := logging.NewLogger(logging.Config{
+		Level:  cfg.LogLevel,
+		Format: cfg.LogFormat,
+	}, os.Stderr)
 
 	gitMgr, err := gitengine.NewManager(cfg.RepoRoot, cfg.GitBinary, os.Args[0], cfg.SocketPath)
 	if err != nil {
@@ -132,7 +154,7 @@ func runServe(_ []string) int {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("knotwork listening", "addr", cfg.Addr, "base_url", cfg.BaseURL, "db", store.Driver)
+		log.Info("knotwork listening", "addr", cfg.Addr, "base_url", cfg.BaseURL, "db", store.Driver, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

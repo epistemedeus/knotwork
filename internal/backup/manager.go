@@ -53,6 +53,9 @@ func NewManager(store Store, db *database.DB, git *gitengine.Manager, log *slog.
 func (m *Manager) Start() {
 	m.stop = make(chan struct{})
 	m.wg.Add(1)
+	if m.Log != nil {
+		m.Log.Debug("backup scheduler starting", "interval", m.Interval)
+	}
 	go func() {
 		defer m.wg.Done()
 		ticker := time.NewTicker(m.Interval)
@@ -92,7 +95,13 @@ func (m *Manager) Trigger(repo domain.Repository) {
 	defer m.mu.Unlock()
 	if timer, ok := m.timers[repo.ID]; ok {
 		timer.Reset(m.Debounce)
+		if m.Log != nil {
+			m.Log.Debug("reset backup debounce timer", "repo", repo.Path, "debounce", m.Debounce)
+		}
 		return
+	}
+	if m.Log != nil {
+		m.Log.Debug("scheduled repository backup", "repo", repo.Path, "debounce", m.Debounce)
 	}
 	m.timers[repo.ID] = time.AfterFunc(m.Debounce, func() {
 		m.mu.Lock()
@@ -111,10 +120,16 @@ func (m *Manager) BundleRepository(ctx context.Context, repo domain.Repository) 
 	var lastErr error
 	backoff := 2 * time.Second
 	for attempt := 1; attempt <= 3; attempt++ {
+		if m.Log != nil {
+			m.Log.DebugContext(ctx, "starting repository bundle upload", "repo", repo.Path, "attempt", attempt)
+		}
 		err := m.uploadBundle(ctx, repo)
 		if err == nil {
 			if err := m.DB.MarkBundled(ctx, repo.ID); err != nil {
 				m.Log.Warn("mark bundled failed", "repo", repo.Path, "error", err)
+			}
+			if m.Log != nil {
+				m.Log.DebugContext(ctx, "repository bundle uploaded successfully", "repo", repo.Path)
 			}
 			return nil
 		}
@@ -156,17 +171,25 @@ func (m *Manager) uploadBundle(ctx context.Context, repo domain.Repository) erro
 // database keeps serving reads and writes during the copy.
 func (m *Manager) Snapshot(ctx context.Context) error {
 	key := fmt.Sprintf("backups/db/%s", time.Now().UTC().Format("20060102T150405Z"))
+	if m.Log != nil {
+		m.Log.DebugContext(ctx, "starting database snapshot", "driver", m.DB.Driver, "target_key", key)
+	}
+	var err error
 	switch m.DB.Driver {
 	case "sqlite":
 		if m.DB.Path == "" {
 			return nil
 		}
-		return m.snapshotSQLite(ctx, key+".sqlite.zst")
+		err = m.snapshotSQLite(ctx, key+".sqlite.zst")
 	case "postgres":
-		return m.snapshotPostgres(ctx, key+".sql.zst")
+		err = m.snapshotPostgres(ctx, key+".sql.zst")
 	default:
 		return fmt.Errorf("unsupported database driver %q", m.DB.Driver)
 	}
+	if err == nil && m.Log != nil {
+		m.Log.DebugContext(ctx, "database snapshot completed successfully", "driver", m.DB.Driver, "target_key", key)
+	}
+	return err
 }
 
 func (m *Manager) snapshotSQLite(ctx context.Context, key string) error {

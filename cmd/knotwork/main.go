@@ -53,7 +53,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `Knotwork — single-node federated Git collaboration
 
 Usage:
-  knotwork serve                     Run the HTTP daemon
+  knotwork serve [flags]             Run the HTTP daemon
+    -v, --verbose, --debug           Enable verbose/debug logging
+    --log-level <level>              Log level (debug, info, warn, error)
+    --log-format <format>            Log format (text, json)
   knotwork status                    Print instance and database status
   knotwork auth login                Authorize Git over HTTPS (device flow)
   knotwork admin grant-role          Grant admin/member/read_only to an OIDC user

@@ -44,11 +44,28 @@ func (e *Executor) RunPipeline(ctx context.Context, pipeline domain.Pipeline) er
 	if err != nil {
 		return fmt.Errorf("load repository: %w", err)
 	}
+
+	if e.Log != nil {
+		e.Log.DebugContext(ctx, "ci pipeline starting",
+			"pipeline_id", pipeline.ID,
+			"repo", repo.Path,
+			"commit", pipeline.CommitSHA,
+			"ref", pipeline.RefName,
+		)
+	}
+
 	if err := e.DB.SetPipelineStatus(ctx, pipeline.ID, domain.PipelineRunning); err != nil {
 		return err
 	}
 	out := e.Hub.Writer(pipeline.ID)
 	fail := func(err error) error {
+		if e.Log != nil {
+			e.Log.WarnContext(ctx, "ci pipeline failed",
+				"pipeline_id", pipeline.ID,
+				"repo", repo.Path,
+				"error", err,
+			)
+		}
 		e.Hub.Publish(pipeline.ID, "\n[knotwork] pipeline failed: "+err.Error()+"\n")
 		_ = e.DB.SetPipelineStatus(context.WithoutCancel(ctx), pipeline.ID, domain.PipelineFailed)
 		return err
@@ -65,12 +82,18 @@ func (e *Executor) RunPipeline(ctx context.Context, pipeline domain.Pipeline) er
 	// Read CI configuration directly from the object database without checkout
 	cfg, file, err := e.loadConfigFromRepo(ctx, repo.DiskPath, commitRef)
 	if errors.Is(err, ErrNoConfig) {
+		if e.Log != nil {
+			e.Log.DebugContext(ctx, "no ci config found", "pipeline_id", pipeline.ID, "repo", repo.Path)
+		}
 		e.Hub.Publish(pipeline.ID, "[knotwork] no "+ConfigFile+" found; nothing to run\n")
 		_ = e.DB.SetPipelineStatus(ctx, pipeline.ID, domain.PipelineSuccess)
 		return nil
 	}
 	if err != nil {
 		return fail(err)
+	}
+	if e.Log != nil {
+		e.Log.DebugContext(ctx, "ci config loaded", "pipeline_id", pipeline.ID, "file", file, "jobs_count", len(cfg.Jobs))
 	}
 	e.Hub.Publish(pipeline.ID, "[knotwork] using "+file+"\n")
 
@@ -93,6 +116,14 @@ func (e *Executor) RunPipeline(ctx context.Context, pipeline domain.Pipeline) er
 		runner = &DockerRunner{}
 	}
 	for _, job := range cfg.Jobs {
+		if e.Log != nil {
+			e.Log.DebugContext(ctx, "ci running job",
+				"pipeline_id", pipeline.ID,
+				"job", job.Name,
+				"stage", job.Stage,
+				"image", job.Image,
+			)
+		}
 		e.Hub.Publish(pipeline.ID, fmt.Sprintf("\n[knotwork] job %s (stage %s, image %s)\n", job.Name, job.Stage, job.Image))
 		result, err := runner.Run(ctx, &PipelineJob{
 			ID:        pipeline.ID + ":" + job.Name,
@@ -111,6 +142,9 @@ func (e *Executor) RunPipeline(ctx context.Context, pipeline domain.Pipeline) er
 		if len(job.Artifacts.Paths) > 0 {
 			e.Hub.Publish(pipeline.ID, "[knotwork] artifact collection is not implemented yet\n")
 		}
+	}
+	if e.Log != nil {
+		e.Log.DebugContext(ctx, "ci pipeline succeeded", "pipeline_id", pipeline.ID, "repo", repo.Path)
 	}
 	e.Hub.Publish(pipeline.ID, "\n[knotwork] pipeline succeeded\n")
 	return e.DB.SetPipelineStatus(ctx, pipeline.ID, domain.PipelineSuccess)

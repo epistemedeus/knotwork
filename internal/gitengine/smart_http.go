@@ -90,6 +90,15 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 	}
 	repoPath := req.owner + "/" + req.repo
 
+	if h.Logger != nil {
+		h.Logger.DebugContext(r.Context(), "git http request received",
+			"owner", req.owner,
+			"repo", req.repo,
+			"endpoint", req.endpoint,
+			"write", req.write,
+		)
+	}
+
 	repo, err := h.RepoByPath(r.Context(), repoPath)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -150,7 +159,7 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 	if limiter != nil {
 		if err := limiter.Acquire(r.Context()); err != nil {
 			if h.Logger != nil {
-				h.Logger.Warn("git process concurrency limit reached", "error", err)
+				h.Logger.WarnContext(r.Context(), "git process concurrency limit reached", "error", err)
 			}
 			http.Error(w, "server busy: too many concurrent git operations", http.StatusServiceUnavailable)
 			return
@@ -182,6 +191,15 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		"http-backend",
 	}
 
+	if h.Logger != nil {
+		h.Logger.DebugContext(r.Context(), "executing git http-backend",
+			"repo", repoPath,
+			"disk_path", repo.DiskPath,
+			"git_bin", gitBin,
+			"actor", user.Username,
+		)
+	}
+
 	handler := &cgi.Handler{
 		Path:       gitBin,
 		Args:       args,
@@ -193,6 +211,12 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 	if req.endpoint == "git-receive-pack" && h.HookServer != nil && h.Manager != nil {
 		refs := h.HookServer.PopApprovedRefs(repo.DiskPath)
 		if len(refs) > 0 && h.OnPushSuccess != nil {
+			if h.Logger != nil {
+				h.Logger.DebugContext(r.Context(), "processing approved refs after push",
+					"repo", repoPath,
+					"approved_count", len(refs),
+				)
+			}
 			var confirmed []RefUpdate
 			for _, update := range refs {
 				if IsZeroSHA(update.New) {
@@ -204,6 +228,12 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 				}
 			}
 			if len(confirmed) > 0 {
+				if h.Logger != nil {
+					h.Logger.DebugContext(r.Context(), "triggering on-push success handlers",
+						"repo", repoPath,
+						"confirmed_count", len(confirmed),
+					)
+				}
 				h.OnPushSuccess(r.Context(), repo, user, confirmed)
 			}
 		}
@@ -214,7 +244,7 @@ func (h *HTTPHandler) canWrite(ctx context.Context, repo domain.Repository, user
 	role, err := h.Role(ctx, repo, user)
 	if err != nil {
 		if h.Logger != nil {
-			h.Logger.Error("repo role lookup failed", "repo", repo.Path, "error", err)
+			h.Logger.ErrorContext(ctx, "repo role lookup failed", "repo", repo.Path, "error", err)
 		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return false
@@ -233,7 +263,7 @@ func (h *HTTPHandler) canRead(ctx context.Context, repo domain.Repository, user 
 	role, err := h.Role(ctx, repo, user)
 	if err != nil {
 		if h.Logger != nil {
-			h.Logger.Error("repo role lookup failed", "repo", repo.Path, "error", err)
+			h.Logger.ErrorContext(ctx, "repo role lookup failed", "repo", repo.Path, "error", err)
 		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return false
