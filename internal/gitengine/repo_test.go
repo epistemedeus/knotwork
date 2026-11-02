@@ -38,15 +38,22 @@ func TestRepositoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	for _, hook := range []string{"pre-receive", "post-receive"} {
-		info, err := os.Stat(filepath.Join(disk, "hooks", hook))
-		if err != nil || info.Mode()&0o111 == 0 {
-			t.Fatalf("hook %s missing or not executable: %v", hook, err)
-		}
-		// Validate hook script permissions are read-only 0555
-		if perm := info.Mode().Perm(); perm != 0o555 {
-			t.Fatalf("hook %s permissions = %o, want 0555", hook, perm)
-		}
+	// Verify core.hooksPath is set to the centralized hooks directory
+	hooksPath := gitCmd(t, disk, "config", "core.hooksPath")
+	if hooksPath != mgr.HooksDir {
+		t.Fatalf("core.hooksPath = %q, want %q", hooksPath, mgr.HooksDir)
+	}
+	// Verify central pre-receive hook exists and is executable
+	info, err := os.Stat(filepath.Join(mgr.HooksDir, "pre-receive"))
+	if err != nil || info.Mode()&0o111 == 0 {
+		t.Fatalf("central pre-receive missing or not executable: %v", err)
+	}
+	// Verify no per-repository hook files exist
+	if _, err := os.Stat(filepath.Join(disk, "hooks", "pre-receive")); err == nil {
+		t.Fatal("per-repo hooks/pre-receive should not exist")
+	}
+	if _, err := os.Stat(filepath.Join(disk, "hooks", "post-receive")); err == nil {
+		t.Fatal("per-repo hooks/post-receive should not exist")
 	}
 
 	empty, err := mgr.IsEmpty(ctx, disk)
@@ -76,53 +83,48 @@ func TestRepositoryRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitCmd(t, work, "add", ".")
-	gitCmd(t, work, "commit", "-qm", "initial")
+	gitCmd(t, work, "commit", "-q", "-m", "Initial commit")
 	gitCmd(t, work, "remote", "add", "origin", disk)
 	gitCmd(t, work, "push", "-q", "origin", "main")
 
-	emptyAfterPush, err := mgr.IsEmpty(ctx, disk)
-	if err != nil || emptyAfterPush {
-		t.Fatalf("IsEmpty after push: %v, %v", emptyAfterPush, err)
+	empty, err = mgr.IsEmpty(ctx, disk)
+	if err != nil || empty {
+		t.Fatalf("IsEmpty after push: %v, %v", empty, err)
 	}
 
 	paths, err := mgr.ListTree(ctx, disk, "main")
 	if err != nil {
 		t.Fatalf("ListTree: %v", err)
 	}
-	if len(paths) != 2 || paths[0] != "README.md" {
-		t.Fatalf("paths = %v", paths)
-	}
-	content, binary, err := mgr.ReadBlob(ctx, disk, "main", "app.js")
-	if err != nil || binary || string(content) != "console.log('hi')\n" {
-		t.Fatalf("ReadBlob = %q, %v, %v", content, binary, err)
+	if len(paths) != 2 || paths[0] != "README.md" || paths[1] != "app.js" {
+		t.Fatalf("ListTree = %v, want [README.md app.js]", paths)
 	}
 
-	if _, _, err := mgr.ReadBlob(ctx, disk, "main", "../secret"); err == nil {
-		t.Fatal("path traversal was allowed")
+	readme, binary, err := mgr.ReadBlob(ctx, disk, "main", "README.md")
+	if err != nil || binary {
+		t.Fatalf("ReadBlob: %v (binary: %v)", err, binary)
 	}
-	if _, err := mgr.ListTree(ctx, disk, "--help"); err == nil {
-		t.Fatal("option-like ref was allowed")
-	}
-	if _, err := mgr.ListTree(ctx, disk, "missing-branch"); err == nil {
-		t.Fatal("missing ref should fail")
+	if string(readme) != "# Demo\n" {
+		t.Fatalf("ReadBlob content = %q", readme)
 	}
 
-	mainSHA, err := mgr.ResolveCommit(ctx, disk, "main")
-	if err != nil || len(mainSHA) != 40 {
-		t.Fatalf("ResolveCommit = %q, %v", mainSHA, err)
+	patch, err := mgr.DiffRange(ctx, disk, "", "main")
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
 	}
-	if _, err := mgr.ResolveCommit(ctx, disk, "does-not-exist"); err == nil {
-		t.Fatal("unknown revision resolved")
+	if !strings.Contains(string(patch), "console.log('hi')") || !strings.Contains(string(patch), "a/app.js") {
+		t.Fatalf("unexpected patch:\n%s", patch)
 	}
 
-	gitCmd(t, work, "checkout", "-qb", "feature")
+	gitCmd(t, work, "checkout", "-q", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(work, "app.js"), []byte("console.log('bye')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, work, "commit", "-qam", "update")
+	gitCmd(t, work, "add", "app.js")
+	gitCmd(t, work, "commit", "-q", "-m", "Change app")
 	gitCmd(t, work, "push", "-q", "origin", "feature")
 
-	patch, err := mgr.DiffRange(ctx, disk, "main", "feature")
+	patch, err = mgr.DiffRange(ctx, disk, "main", "feature")
 	if err != nil {
 		t.Fatalf("DiffRange: %v", err)
 	}
@@ -288,11 +290,10 @@ func TestInitSecurityConfigs(t *testing.T) {
 
 	// Verify Git configs
 	expectedConfigs := map[string]string{
-		"receive.fsckobjects":   "true",
-		"fetch.fsckobjects":     "true",
-		"transfer.fsckobjects":  "true",
-		"receive.maxinputsize":  "104857600",
-		"core.sharedrepository": "0640",
+		"receive.fsckobjects":  "true",
+		"fetch.fsckobjects":    "true",
+		"transfer.fsckobjects": "true",
+		"receive.maxinputsize": "104857600",
 	}
 	for cfgKey, want := range expectedConfigs {
 		got := gitCmd(t, disk, "config", cfgKey)

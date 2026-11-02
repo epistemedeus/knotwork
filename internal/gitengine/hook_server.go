@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"knotwork/internal/database"
-	"knotwork/internal/domain"
 )
 
 // RefUpdate is one line of a Git pre-receive transaction.
@@ -25,7 +24,7 @@ type RefUpdate struct {
 }
 
 type HookRequest struct {
-	Kind           string      `json:"kind"` // "pre-receive" or "post-receive"
+	Kind           string      `json:"kind,omitempty"` // "pre-receive"
 	RepoDir        string      `json:"repo_dir"`
 	ActorID        string      `json:"actor_id"`
 	Refs           []RefUpdate `json:"refs"`
@@ -39,22 +38,26 @@ type HookResponse struct {
 	Message string `json:"message"`
 }
 
-// HookServer validates pushes over a Unix domain socket so Git hooks never
-// touch the database directly.
+// HookServer validates pre-receive pushes over a Unix domain socket so Git hooks
+// never touch the database directly and cannot bypass branch protections.
 type HookServer struct {
 	store   *database.DB
 	manager *Manager
 	log     *slog.Logger
 
-	OnPostReceive func(ctx context.Context, repo domain.Repository, refs []RefUpdate)
-
-	mu   sync.Mutex
-	ln   net.Listener
-	done chan struct{}
+	mu           sync.Mutex
+	approvedRefs map[string][]RefUpdate
+	ln           net.Listener
+	done         chan struct{}
 }
 
 func NewHookServer(store *database.DB, manager *Manager, log *slog.Logger) *HookServer {
-	return &HookServer{store: store, manager: manager, log: log}
+	return &HookServer{
+		store:        store,
+		manager:      manager,
+		log:          log,
+		approvedRefs: make(map[string][]RefUpdate),
+	}
 }
 
 func (s *HookServer) Start(socketPath string) error {
@@ -102,6 +105,16 @@ func (s *HookServer) Close() error {
 	return s.ln.Close()
 }
 
+// PopApprovedRefs retrieves and clears the approved ref updates for diskPath.
+func (s *HookServer) PopApprovedRefs(diskPath string) []RefUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clean := filepath.Clean(diskPath)
+	refs := s.approvedRefs[clean]
+	delete(s.approvedRefs, clean)
+	return refs
+}
+
 func (s *HookServer) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -135,14 +148,8 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 		return HookResponse{Message: "Remote rejected: write access denied"}
 	}
 
-	if req.Kind == "post-receive" {
-		if s.OnPostReceive != nil {
-			s.OnPostReceive(ctx, repo, req.Refs)
-		}
-		return HookResponse{OK: true}
-	}
-	if req.Kind != "pre-receive" {
-		return HookResponse{Message: "Remote rejected: unknown hook"}
+	if req.Kind != "" && req.Kind != "pre-receive" {
+		return HookResponse{Message: "Remote rejected: unsupported hook"}
 	}
 
 	protected := splitBranches(repo.ProtectedBranches)
@@ -162,6 +169,11 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 			return HookResponse{Message: fmt.Sprintf("Remote rejected: non-fast-forward push to [%s]", branch)}
 		}
 	}
+
+	s.mu.Lock()
+	s.approvedRefs[filepath.Clean(repo.DiskPath)] = req.Refs
+	s.mu.Unlock()
+
 	return HookResponse{OK: true}
 }
 

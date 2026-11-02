@@ -16,12 +16,14 @@ import (
 // so pushes never land in server memory or temporary files.
 type HTTPHandler struct {
 	Manager         *Manager
+	HookServer      *HookServer
 	RepoByPath      func(ctx context.Context, path string) (domain.Repository, error)
 	UserFromRequest func(r *http.Request) (domain.User, bool)
 	Role            func(ctx context.Context, repo domain.Repository, user domain.User) (string, error)
 	Logger          *slog.Logger
 	Limiter         *ConcurrencyLimiter
 	MaxPushSize     int64
+	OnPushSuccess   func(ctx context.Context, repo domain.Repository, user domain.User, refs []RefUpdate)
 }
 
 // Register installs catch-all GET/POST handlers. Git clone URLs live at the
@@ -98,14 +100,18 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 	}
 
 	var user domain.User
-	var authed bool
+	var hasUser bool
 	if h.UserFromRequest != nil {
-		user, authed = h.UserFromRequest(r)
+		user, hasUser = h.UserFromRequest(r)
 	}
 
-	if req.write {
-		if !authed {
-			unauthorized(w)
+	switch {
+	case req.write:
+		// Smart HTTP pushes require authentication even for public repositories.
+		if !hasUser {
+			w.Header().Add("WWW-Authenticate", `Basic realm="Knotwork"`)
+			w.Header().Add("WWW-Authenticate", `Bearer realm="Knotwork", device_flow="/auth/device"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		if !h.canWrite(r.Context(), repo, user, w) {
@@ -114,17 +120,19 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		if h.Manager != nil {
 			_ = h.Manager.InstallHooks(repo.DiskPath)
 		}
-		// Enforce maximum packfile size at the HTTP layer (100MB default).
-		maxPushSize := h.MaxPushSize
-		if maxPushSize <= 0 {
-			maxPushSize = 100 * 1024 * 1024 // 100MB
+		// DoS defense: reject push payloads exceeding configured maximum input size
+		maxPush := h.MaxPushSize
+		if maxPush <= 0 {
+			maxPush = 104857600 // 100MB default
 		}
-		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxPushSize)
-		}
-	} else if repo.IsPrivate {
-		if !authed {
-			unauthorized(w)
+		r.Body = http.MaxBytesReader(w, r.Body, maxPush)
+
+	case repo.IsPrivate:
+		// Private reads require an authenticated user with repo access.
+		if !hasUser {
+			w.Header().Add("WWW-Authenticate", `Basic realm="Knotwork"`)
+			w.Header().Add("WWW-Authenticate", `Bearer realm="Knotwork", device_flow="/auth/device"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		if !h.canRead(r.Context(), repo, user, w) {
@@ -181,6 +189,25 @@ func (h *HTTPHandler) serve(w http.ResponseWriter, r *http.Request, req gitReque
 		InheritEnv: []string{"LANG", "TZ"}, // Do NOT inherit HOME or ambient configs
 	}
 	handler.ServeHTTP(w, r)
+
+	if req.endpoint == "git-receive-pack" && h.HookServer != nil && h.Manager != nil {
+		refs := h.HookServer.PopApprovedRefs(repo.DiskPath)
+		if len(refs) > 0 && h.OnPushSuccess != nil {
+			var confirmed []RefUpdate
+			for _, update := range refs {
+				if IsZeroSHA(update.New) {
+					confirmed = append(confirmed, update)
+					continue
+				}
+				if sha, err := h.Manager.ResolveCommit(r.Context(), repo.DiskPath, update.Ref); err == nil && sha == update.New {
+					confirmed = append(confirmed, update)
+				}
+			}
+			if len(confirmed) > 0 {
+				h.OnPushSuccess(r.Context(), repo, user, confirmed)
+			}
+		}
+	}
 }
 
 func (h *HTTPHandler) canWrite(ctx context.Context, repo domain.Repository, user domain.User, w http.ResponseWriter) bool {
@@ -200,16 +227,20 @@ func (h *HTTPHandler) canWrite(ctx context.Context, repo domain.Repository, user
 }
 
 func (h *HTTPHandler) canRead(ctx context.Context, repo domain.Repository, user domain.User, w http.ResponseWriter) bool {
+	if user.IsAdmin() {
+		return true
+	}
 	role, err := h.Role(ctx, repo, user)
-	if err != nil || role == "" {
-		http.Error(w, "read access denied", http.StatusForbidden)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("repo role lookup failed", "repo", repo.Path, "error", err)
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	if role == "" {
+		http.Error(w, "access denied", http.StatusForbidden)
 		return false
 	}
 	return true
-}
-
-func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="Knotwork"`)
-	w.Header().Add("WWW-Authenticate", `Bearer realm="Knotwork", device_flow="/auth/device"`)
-	http.Error(w, "authentication required", http.StatusUnauthorized)
 }

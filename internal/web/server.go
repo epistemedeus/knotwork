@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -13,23 +14,25 @@ import (
 	"knotwork/internal/ci"
 	"knotwork/internal/config"
 	"knotwork/internal/database"
+	"knotwork/internal/domain"
 	"knotwork/internal/federation"
 	"knotwork/internal/gitengine"
 	"knotwork/internal/mcp"
 )
 
 type Server struct {
-	Cfg    config.Config
-	DB     *database.DB
-	Auth   *auth.Service
-	Git    *gitengine.Manager
-	Hook   *gitengine.HookServer
-	CI     *ci.Executor
-	Hub    *ci.Hub
-	Backup *backup.Manager
-	Fed    *federation.InboxService
-	MCP    *mcp.Server
-	Log    *slog.Logger
+	Cfg           config.Config
+	DB            *database.DB
+	Auth          *auth.Service
+	Git           *gitengine.Manager
+	Hook          *gitengine.HookServer
+	CI            *ci.Executor
+	Hub           *ci.Hub
+	Backup        *backup.Manager
+	Fed           *federation.InboxService
+	MCP           *mcp.Server
+	Log           *slog.Logger
+	OnPushSuccess func(ctx context.Context, repo domain.Repository, user domain.User, refs []gitengine.RefUpdate)
 
 	mux *http.ServeMux
 }
@@ -66,10 +69,12 @@ func (s *Server) Build() http.Handler {
 func (s *Server) registerGitHTTP() {
 	h := &gitengine.HTTPHandler{
 		Manager:         s.Git,
+		HookServer:      s.Hook,
 		RepoByPath:      s.DB.GetRepoByPath,
 		UserFromRequest: s.Auth.UserFromRequest,
 		Role:            s.DB.RepoRole,
 		Logger:          s.Log,
+		OnPushSuccess:   s.OnPushSuccess,
 	}
 	h.Register(s.mux)
 }

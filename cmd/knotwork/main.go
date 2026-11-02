@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	"knotwork/internal/config"
@@ -13,6 +14,11 @@ import (
 )
 
 func main() {
+	// If executed via direct symlink as "pre-receive", invoke the hook immediately.
+	if filepath.Base(os.Args[0]) == "pre-receive" {
+		os.Exit(gitengine.RunHook("pre-receive", os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -29,7 +35,7 @@ func main() {
 		code = runAuth(os.Args[2:])
 	case "hook":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: knotwork hook pre-receive|post-receive")
+			fmt.Fprintln(os.Stderr, "usage: knotwork hook pre-receive")
 			code = 2
 			break
 		}
@@ -55,7 +61,7 @@ Usage:
   knotwork admin revoke-sessions     Revoke web/CLI sessions
   knotwork admin scim-token          Mint a SCIM bearer token
   knotwork admin peers list|add|remove
-  knotwork hook pre-receive|post-receive
+  knotwork hook pre-receive
   knotwork version
 `)
 }
@@ -96,16 +102,10 @@ func runStatus() int {
 }
 
 func runHook(kind string) int {
-	switch kind {
-	case "pre-receive", "post-receive":
-		return runHookCommand(kind)
-	default:
+	if kind != "pre-receive" {
 		fmt.Fprintln(os.Stderr, "unknown hook", kind)
 		return 2
 	}
-}
-
-func runHookCommand(kind string) int {
 	return gitengine.RunHook(kind, os.Stdin, os.Stdout, os.Stderr)
 }
 

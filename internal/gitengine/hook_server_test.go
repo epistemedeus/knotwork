@@ -190,6 +190,57 @@ func TestIsAncestorWithQuarantine(t *testing.T) {
 	}
 }
 
+func TestCentralHooksProvisioning(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := NewManager(root, "git", "/bin/sh", filepath.Join(root, "hook.sock"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// EnsureCentralHooks creates executable pre-receive in mgr.HooksDir
+	if err := mgr.EnsureCentralHooks(); err != nil {
+		t.Fatalf("EnsureCentralHooks: %v", err)
+	}
+
+	preReceive := filepath.Join(mgr.HooksDir, "pre-receive")
+	info, err := os.Stat(preReceive)
+	if err != nil {
+		t.Fatalf("pre-receive hook does not exist: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("pre-receive hook is not executable: %v", info.Mode())
+	}
+
+	// Obsolete post-receive must not exist
+	if _, err := os.Stat(filepath.Join(mgr.HooksDir, "post-receive")); err == nil {
+		t.Fatal("post-receive hook should not exist")
+	}
+}
+
+func TestPopApprovedRefs(t *testing.T) {
+	server := NewHookServer(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	diskPath := "/path/to/repo.git"
+
+	refs := []RefUpdate{
+		{Old: "abc", New: "def", Ref: "refs/heads/main"},
+	}
+
+	server.mu.Lock()
+	server.approvedRefs[diskPath] = refs
+	server.mu.Unlock()
+
+	popped := server.PopApprovedRefs(diskPath)
+	if len(popped) != 1 || popped[0].New != "def" {
+		t.Fatalf("PopApprovedRefs = %v, want %v", popped, refs)
+	}
+
+	// Second pop must be empty
+	second := server.PopApprovedRefs(diskPath)
+	if len(second) != 0 {
+		t.Fatalf("second PopApprovedRefs = %v, want empty", second)
+	}
+}
+
 func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
 	entries, err := os.ReadDir(src)
