@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,8 +94,8 @@ func TestMCPThroughWebStack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logBuf bytes.Buffer
-	log := logging.NewLogger(logging.Config{Level: "info", Format: "json"}, &logBuf)
+	logBuf := &lockedBuffer{}
+	log := logging.NewLogger(logging.Config{Level: "info", Format: "json"}, logBuf)
 	authSvc := &auth.Service{
 		DB:     db,
 		Cfg:    config.Config{BaseURL: base, DataDir: t.TempDir()},
@@ -154,7 +155,7 @@ func TestMCPThroughWebStack(t *testing.T) {
 	if denied.Header.Get("X-Request-ID") != "trace-mcp-denied" {
 		t.Fatalf("X-Request-ID = %q", denied.Header.Get("X-Request-ID"))
 	}
-	assertMCPTrace(t, &logBuf, "trace-mcp-denied", "/api/mcp", 401)
+	assertMCPTrace(t, logBuf, "trace-mcp-denied", "/api/mcp", 401)
 
 	const badBasic = "not-a-real-basic-token"
 	badReq := mustWebReq(t, http.MethodPost, base+"/api/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
@@ -176,8 +177,8 @@ func TestMCPThroughWebStack(t *testing.T) {
 	if strings.Contains(string(badBody), badBasic) || strings.Contains(logBuf.String(), badBasic) || strings.Contains(logBuf.String(), token) {
 		t.Fatal("trace log or body contains a credential")
 	}
-	assertMCPTrace(t, &logBuf, "trace-mcp-basic-no", "/api/mcp", 401)
-	if !traceHasMessage(t, &logBuf, "trace-mcp-basic-no", "mcp credential refused") {
+	assertMCPTrace(t, logBuf, "trace-mcp-basic-no", "/api/mcp", 401)
+	if !traceHasMessage(t, logBuf, "trace-mcp-basic-no", "mcp credential refused") {
 		t.Fatalf("missing refusal trace: %s", logBuf.String())
 	}
 
@@ -236,7 +237,7 @@ func TestMCPThroughWebStack(t *testing.T) {
 	if len(basicCall.Content) != 1 {
 		t.Fatalf("basic auth content = %#v", basicCall.Content)
 	}
-	assertMCPTrace(t, &logBuf, "trace-mcp-basic-yes", "/api/mcp", 200)
+	assertMCPTrace(t, logBuf, "trace-mcp-basic-yes", "/api/mcp", 200)
 	if strings.Contains(logBuf.String(), token) || strings.Contains(logBuf.String(), badBasic) {
 		t.Fatal("trace log contains a credential")
 	}
@@ -270,7 +271,30 @@ func TestMCPThroughWebStack(t *testing.T) {
 	}
 }
 
-func assertMCPTrace(t *testing.T, buf *bytes.Buffer, reqID, path string, status int) {
+type traceLog interface {
+	String() string
+}
+
+// lockedBuffer lets the test read request logs while the server is still
+// writing them. bytes.Buffer is not safe for that overlap.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func assertMCPTrace(t *testing.T, buf traceLog, reqID, path string, status int) {
 	t.Helper()
 	if !traceHasMessage(t, buf, reqID, "http request") {
 		t.Fatalf("missing http trace req_id=%s path=%s status=%d\n%s", reqID, path, status, buf.String())
@@ -290,7 +314,7 @@ func assertMCPTrace(t *testing.T, buf *bytes.Buffer, reqID, path string, status 
 	t.Fatalf("missing http trace req_id=%s path=%s status=%d\n%s", reqID, path, status, buf.String())
 }
 
-func traceHasMessage(t *testing.T, buf *bytes.Buffer, reqID, msg string) bool {
+func traceHasMessage(t *testing.T, buf traceLog, reqID, msg string) bool {
 	t.Helper()
 	for _, entry := range decodeTraces(t, buf) {
 		if entry["req_id"] == reqID && entry["msg"] == msg {
@@ -300,7 +324,7 @@ func traceHasMessage(t *testing.T, buf *bytes.Buffer, reqID, msg string) bool {
 	return false
 }
 
-func decodeTraces(t *testing.T, buf *bytes.Buffer) []map[string]any {
+func decodeTraces(t *testing.T, buf traceLog) []map[string]any {
 	t.Helper()
 	var entries []map[string]any
 	for _, line := range strings.Split(buf.String(), "\n") {
