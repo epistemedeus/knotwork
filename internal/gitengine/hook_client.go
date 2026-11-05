@@ -8,10 +8,14 @@ import (
 	"strings"
 )
 
-// RunHook is the entrypoint for `knotwork hook pre-receive|post-receive`.
+// RunHook is the entrypoint for `knotwork hook pre-receive` or direct symlink invocation.
 // Pre-receive fails closed: if the daemon socket is unavailable the push is
 // rejected rather than silently bypassing branch protection.
 func RunHook(kind string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if kind != "pre-receive" {
+		_, _ = fmt.Fprintf(stderr, "knotwork: unsupported hook %q\n", kind)
+		return 1
+	}
 	refs, err := parseRefUpdates(stdin)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "knotwork: %v\n", err)
@@ -22,18 +26,21 @@ func RunHook(kind string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "knotwork: cannot determine repository directory")
 		return 1
 	}
+	repoDir := os.Getenv("KNOTWORK_REPO_PATH")
+	if repoDir == "" {
+		repoDir = dir
+	}
 	req := HookRequest{
-		Kind:    kind,
-		RepoDir: dir,
-		ActorID: os.Getenv("KNOTWORK_ACTOR_ID"),
-		Refs:    refs,
+		Kind:           kind,
+		RepoDir:        repoDir,
+		ActorID:        os.Getenv("KNOTWORK_ACTOR_ID"),
+		Refs:           refs,
+		ObjectDir:      os.Getenv("GIT_OBJECT_DIRECTORY"),
+		AltObjectDirs:  os.Getenv("GIT_ALTERNATE_OBJECT_DIRECTORIES"),
+		QuarantinePath: os.Getenv("GIT_QUARANTINE_PATH"),
 	}
 	resp, err := DialHook(os.Getenv("KNOTWORK_SOCKET"), req)
 	if err != nil {
-		if kind == "post-receive" {
-			_, _ = fmt.Fprintf(stderr, "knotwork: post-receive event skipped: %v\n", err)
-			return 0
-		}
 		_, _ = fmt.Fprintln(stdout, "Remote rejected: internal validation unavailable")
 		return 1
 	}
@@ -41,9 +48,6 @@ func RunHook(kind string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, resp.Message)
 	}
 	if !resp.OK {
-		if kind == "post-receive" {
-			return 0
-		}
 		return 1
 	}
 	return 0

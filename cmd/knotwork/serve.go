@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,56 +17,59 @@ import (
 	"knotwork/internal/auth"
 	"knotwork/internal/backup"
 	"knotwork/internal/ci"
-	"knotwork/internal/config"
-	"knotwork/internal/database"
 	"knotwork/internal/domain"
 	"knotwork/internal/federation"
 	"knotwork/internal/gitengine"
+	"knotwork/internal/logging"
 	"knotwork/internal/mcp"
 	"knotwork/internal/web"
 )
 
 func runServe(args []string) int {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	verbose := flags.Bool("v", false, "Enable verbose/debug logging")
+	verboseLong := flags.Bool("verbose", false, "Enable verbose/debug logging")
+	debug := flags.Bool("debug", false, "Enable debug logging")
+	logLevel := flags.String("log-level", "", "Log level (debug, info, warn, error)")
+	logFormat := flags.String("log-format", "", "Log format (text, json)")
+	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := config.Load()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, store, err := loadConfigAndDB(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "knotwork:", err)
-		return 1
-	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
-		log.Error("create data directory failed", "error", err, "dir", cfg.DataDir)
-		return 1
-	}
-
-	store, err := database.Open(ctx, cfg.DatabaseURL)
-	if err != nil {
-		log.Error("database open failed", "error", err)
+		fmt.Fprintln(os.Stderr, "knotwork: config:", err)
 		return 1
 	}
 	defer func() { _ = store.Close() }()
 
-	self, err := os.Executable()
-	if err != nil {
-		log.Error("resolve executable", "error", err)
-		return 1
+	if *verbose || *verboseLong || *debug {
+		cfg.LogLevel = "debug"
 	}
-	gitMgr, err := gitengine.NewManager(cfg.RepoRoot, cfg.GitBinary, self, cfg.SocketPath)
+	if *logLevel != "" {
+		cfg.LogLevel = *logLevel
+	}
+	if *logFormat != "" {
+		cfg.LogFormat = *logFormat
+	}
+
+	log := logging.NewLogger(logging.Config{
+		Level:  cfg.LogLevel,
+		Format: cfg.LogFormat,
+	}, os.Stderr)
+
+	gitMgr, err := gitengine.NewManager(cfg.RepoRoot, cfg.GitBinary, os.Args[0], cfg.SocketPath)
 	if err != nil {
-		log.Error("git engine init failed", "error", err)
+		log.Error("git manager init failed", "error", err)
 		return 1
 	}
 
 	hookServer := gitengine.NewHookServer(store, gitMgr, log)
 	if err := hookServer.Start(cfg.SocketPath); err != nil {
-		log.Error("hook socket failed", "error", err, "socket", cfg.SocketPath)
+		log.Error("hook socket init failed", "error", err)
 		return 1
 	}
 	defer func() { _ = hookServer.Close() }()
@@ -95,7 +98,7 @@ func runServe(args []string) int {
 		Runner: &ci.DockerRunner{Binary: "docker", Host: cfg.DockerHost},
 	}
 
-	hookServer.OnPostReceive = func(ctx context.Context, repo domain.Repository, refs []gitengine.RefUpdate) {
+	onPushSuccess := func(ctx context.Context, repo domain.Repository, user domain.User, refs []gitengine.RefUpdate) {
 		backupMgr.Trigger(repo)
 		seen := map[string]bool{}
 		for _, update := range refs {
@@ -132,51 +135,50 @@ func runServe(args []string) int {
 	app := &web.Server{
 		Cfg: cfg, DB: store, Auth: authSvc, Git: gitMgr, Hook: hookServer,
 		CI: executor, Hub: hub, Backup: backupMgr, Fed: fed, MCP: mcpServer, Log: log,
+		OnPushSuccess: onPushSuccess,
 	}
 	handler := app.Build()
 
 	setupDone, _ := store.SetupCompleted(ctx)
 	if !setupDone {
-		fmt.Printf("Setup key: %s\nVisit: %s/setup?key=%s\n", cfg.SetupSecret, cfg.BaseURL, cfg.SetupSecret)
+		log.Warn("first run: open /auth/login or run `knotwork admin break-glass` to claim instance")
 	}
 
-	httpServer := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+	server := &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Minute,
+		WriteTimeout: 15 * time.Minute,
+		BaseContext:  func(net.Listener) context.Context { return ctx },
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		if cfg.TLSCert != "" {
-			errCh <- httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
-			return
+		log.Info("knotwork listening", "addr", cfg.Addr, "base_url", cfg.BaseURL, "db", store.Driver, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
-		errCh <- httpServer.ListenAndServe()
 	}()
-	log.Info("knotwork listening", "addr", cfg.Addr, "base_url", cfg.BaseURL, "db", store.Driver)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	select {
-	case s := <-sig:
-		log.Info("shutting down", "signal", s.String())
+	case <-ctx.Done():
+		log.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return shutdown(shutdownCtx, server)
 	case err := <-errCh:
-		if !errors.Is(err, http.ErrServerClosed) {
-			log.Error("http server stopped", "error", err)
-			return 1
-		}
+		log.Error("server failed", "error", err)
+		return 1
 	}
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func shutdown(ctx context.Context, s *http.Server) int {
+	if err := s.Shutdown(ctx); err != nil {
+		return 1
+	}
 	return 0
 }
 
 func isZeroSHA(sha string) bool {
-	if sha == "" {
-		return true
-	}
-	return strings.Trim(sha, "0") == ""
+	return sha == "" || strings.Trim(sha, "0") == ""
 }

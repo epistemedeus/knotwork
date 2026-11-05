@@ -1,8 +1,10 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"knotwork/internal/domain"
 )
@@ -33,6 +35,64 @@ func (s *Server) loadRepo(w http.ResponseWriter, r *http.Request) (domain.Reposi
 	return repo, user, role, true
 }
 
+func (s *Server) newRepoPage(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.Auth.UserFromRequest(r)
+	if !ok {
+		http.Redirect(w, r, "/auth/login?next=/repos/new", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = newRepoTemplate.Execute(w, page{
+		Title:  "New Repository · Knotwork",
+		Page:   "new-repo",
+		Authed: true,
+		User:   user,
+	})
+}
+
+func (s *Server) createRepoForm(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.Auth.UserFromRequest(r)
+	if !ok {
+		http.Redirect(w, r, "/auth/login?next=/repos/new", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderNewRepoError(w, user, "Invalid form submission", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	desc := strings.TrimSpace(r.FormValue("description"))
+	vis := r.FormValue("visibility")
+	isPrivate := vis != "public"
+
+	repo, err := s.initializeRepo(r.Context(), user, name, desc, isPrivate)
+	if err != nil {
+		if errors.Is(err, ErrInvalidRepoName) {
+			s.renderNewRepoError(w, user, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, ErrRepoConflict) {
+			s.renderNewRepoError(w, user, err.Error(), http.StatusConflict)
+			return
+		}
+		s.renderNewRepoError(w, user, "Could not create repository", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/repos/"+repo.Path, http.StatusSeeOther)
+}
+
+func (s *Server) renderNewRepoError(w http.ResponseWriter, user domain.User, msg string, code int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
+	_ = newRepoTemplate.Execute(w, page{
+		Title:  "New Repository · Knotwork",
+		Page:   "new-repo",
+		Authed: true,
+		User:   user,
+		Error:  msg,
+	})
+}
+
 func (s *Server) repoPage(w http.ResponseWriter, r *http.Request) {
 	repo, user, role, ok := s.loadRepo(w, r)
 	if !ok {
@@ -40,6 +100,7 @@ func (s *Server) repoPage(w http.ResponseWriter, r *http.Request) {
 	}
 	mrs, _ := s.DB.ListMRs(r.Context(), repo.ID)
 	pipelines, _ := s.DB.ListPipelines(r.Context(), repo.ID)
+	isEmpty, _ := s.Git.IsEmpty(r.Context(), repo.DiskPath)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = repoPageTemplate.Execute(w, page{
 		Title:      repo.Path + " · Knotwork",
@@ -51,6 +112,7 @@ func (s *Server) repoPage(w http.ResponseWriter, r *http.Request) {
 		CanWrite:   role == "admin" || role == "write",
 		CloneURL:   s.Cfg.BaseURL + "/" + repo.Path + ".git",
 		DefaultRef: repo.DefaultBranch,
+		IsEmpty:    isEmpty,
 		MergeReqs:  mrs,
 		Pipelines:  pipelines,
 	})

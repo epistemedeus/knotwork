@@ -32,6 +32,8 @@ type Config struct {
 	TLSKey         string
 	SetupSecret    string
 	AdminEmails    []string
+	LogLevel       string // "debug", "info", "warn", "error"
+	LogFormat      string // "text", "json"
 	OIDC           OIDC
 	S3             S3
 }
@@ -84,6 +86,8 @@ func Load() (Config, error) {
 		SessionTTL:     envDuration("SESSION_TTL", 24*time.Hour),
 		BackupInterval: envDuration("BACKUP_INTERVAL", 6*time.Hour),
 		BundleDebounce: envDuration("BUNDLE_DEBOUNCE", 30*time.Second),
+		LogLevel:       env("LOG_LEVEL", "info"),
+		LogFormat:      env("LOG_FORMAT", "text"),
 		TLSCert:        os.Getenv("KNOTWORK_TLS_CERT"),
 		TLSKey:         os.Getenv("KNOTWORK_TLS_KEY"),
 		SetupSecret:    os.Getenv("KNOTWORK_SETUP_SECRET"),
@@ -132,11 +136,17 @@ func env(key, def string) string {
 	if v := os.Getenv("KNOTWORK_" + key); v != "" {
 		return v
 	}
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
 	return def
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
 	v := os.Getenv("KNOTWORK_" + key)
+	if v == "" {
+		v = os.Getenv(key)
+	}
 	if v == "" {
 		return def
 	}
@@ -149,6 +159,9 @@ func envDuration(key string, def time.Duration) time.Duration {
 
 func envBool(key string, def bool) bool {
 	v := os.Getenv("KNOTWORK_" + key)
+	if v == "" {
+		v = os.Getenv(key)
+	}
 	if v == "" {
 		return def
 	}

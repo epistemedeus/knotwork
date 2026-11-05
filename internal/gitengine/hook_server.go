@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"knotwork/internal/database"
-	"knotwork/internal/domain"
 )
 
 // RefUpdate is one line of a Git pre-receive transaction.
@@ -24,10 +24,13 @@ type RefUpdate struct {
 }
 
 type HookRequest struct {
-	Kind    string      `json:"kind"` // "pre-receive" or "post-receive"
-	RepoDir string      `json:"repo_dir"`
-	ActorID string      `json:"actor_id"`
-	Refs    []RefUpdate `json:"refs"`
+	Kind           string      `json:"kind,omitempty"` // "pre-receive"
+	RepoDir        string      `json:"repo_dir"`
+	ActorID        string      `json:"actor_id"`
+	Refs           []RefUpdate `json:"refs"`
+	ObjectDir      string      `json:"object_dir,omitempty"`
+	AltObjectDirs  string      `json:"alt_object_dirs,omitempty"`
+	QuarantinePath string      `json:"quarantine_path,omitempty"`
 }
 
 type HookResponse struct {
@@ -35,22 +38,26 @@ type HookResponse struct {
 	Message string `json:"message"`
 }
 
-// HookServer validates pushes over a Unix domain socket so Git hooks never
-// touch the database directly.
+// HookServer validates pre-receive pushes over a Unix domain socket so Git hooks
+// never touch the database directly and cannot bypass branch protections.
 type HookServer struct {
 	store   *database.DB
 	manager *Manager
 	log     *slog.Logger
 
-	OnPostReceive func(ctx context.Context, repo domain.Repository, refs []RefUpdate)
-
-	mu   sync.Mutex
-	ln   net.Listener
-	done chan struct{}
+	mu           sync.Mutex
+	approvedRefs map[string][]RefUpdate
+	ln           net.Listener
+	done         chan struct{}
 }
 
 func NewHookServer(store *database.DB, manager *Manager, log *slog.Logger) *HookServer {
-	return &HookServer{store: store, manager: manager, log: log}
+	return &HookServer{
+		store:        store,
+		manager:      manager,
+		log:          log,
+		approvedRefs: make(map[string][]RefUpdate),
+	}
 }
 
 func (s *HookServer) Start(socketPath string) error {
@@ -98,6 +105,16 @@ func (s *HookServer) Close() error {
 	return s.ln.Close()
 }
 
+// PopApprovedRefs retrieves and clears the approved ref updates for diskPath.
+func (s *HookServer) PopApprovedRefs(diskPath string) []RefUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clean := filepath.Clean(diskPath)
+	refs := s.approvedRefs[clean]
+	delete(s.approvedRefs, clean)
+	return refs
+}
+
 func (s *HookServer) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -107,7 +124,21 @@ func (s *HookServer) handle(conn net.Conn) {
 		s.log.Warn("invalid hook request", "error", err)
 		return
 	}
+	if s.log != nil {
+		s.log.Debug("hook request received",
+			"kind", req.Kind,
+			"repo_dir", req.RepoDir,
+			"actor_id", req.ActorID,
+			"refs_count", len(req.Refs),
+			"has_quarantine", req.ObjectDir != "",
+		)
+	}
 	resp := s.authorize(req)
+	if !resp.OK && s.log != nil {
+		s.log.Debug("hook rejected push", "repo_dir", req.RepoDir, "reason", resp.Message)
+	} else if s.log != nil {
+		s.log.Debug("hook approved push", "repo_dir", req.RepoDir, "refs_count", len(req.Refs))
+	}
 	if err := json.NewEncoder(conn).Encode(resp); err != nil {
 		s.log.Warn("write hook response", "error", err)
 	}
@@ -131,19 +162,32 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 		return HookResponse{Message: "Remote rejected: write access denied"}
 	}
 
-	if req.Kind == "post-receive" {
-		if s.OnPostReceive != nil {
-			s.OnPostReceive(ctx, repo, req.Refs)
-		}
-		return HookResponse{OK: true}
-	}
-	if req.Kind != "pre-receive" {
-		return HookResponse{Message: "Remote rejected: unknown hook"}
+	if req.Kind != "" && req.Kind != "pre-receive" {
+		return HookResponse{Message: "Remote rejected: unsupported hook"}
 	}
 
 	protected := splitBranches(repo.ProtectedBranches)
+	quarantineEnv := s.quarantineEnv(repo.DiskPath, req)
+	if s.log != nil {
+		s.log.Debug("evaluating push policies",
+			"repo", repo.Path,
+			"actor", user.Username,
+			"role", role,
+			"protected_branches", repo.ProtectedBranches,
+		)
+	}
 	for _, update := range req.Refs {
 		branch, ok := strings.CutPrefix(update.Ref, "refs/heads/")
+		isProtected := ok && protected[branch]
+		if s.log != nil {
+			s.log.Debug("evaluating ref update",
+				"ref", update.Ref,
+				"old", update.Old,
+				"new", update.New,
+				"branch", branch,
+				"is_protected", isProtected,
+			)
+		}
 		if !ok || !protected[branch] {
 			continue
 		}
@@ -153,11 +197,76 @@ func (s *HookServer) authorize(req HookRequest) HookResponse {
 		if update.New == strings.Repeat("0", len(update.New)) {
 			return HookResponse{Message: fmt.Sprintf("Remote rejected: Branch [%s] cannot be deleted", branch)}
 		}
-		if !s.manager.IsAncestor(ctx, repo.DiskPath, update.Old, update.New) {
+		if !s.manager.IsAncestor(ctx, repo.DiskPath, update.Old, update.New, quarantineEnv...) {
 			return HookResponse{Message: fmt.Sprintf("Remote rejected: non-fast-forward push to [%s]", branch)}
 		}
 	}
+
+	s.mu.Lock()
+	s.approvedRefs[filepath.Clean(repo.DiskPath)] = req.Refs
+	s.mu.Unlock()
+
 	return HookResponse{OK: true}
+}
+
+func (s *HookServer) quarantineEnv(repoDiskPath string, req HookRequest) []string {
+	if req.ObjectDir == "" {
+		return nil
+	}
+	cleanObj := filepath.Clean(req.ObjectDir)
+	if !filepath.IsAbs(cleanObj) {
+		cleanObj = filepath.Clean(filepath.Join(repoDiskPath, cleanObj))
+	}
+	objectsRoot := filepath.Clean(filepath.Join(repoDiskPath, "objects"))
+
+	realObj := resolvePath(cleanObj)
+	realRoot := resolvePath(objectsRoot)
+
+	// Quarantine directory must reside strictly within the repository's objects folder
+	if realObj != realRoot && !strings.HasPrefix(realObj, realRoot+string(filepath.Separator)) {
+		s.log.Warn("quarantine object dir outside repository objects", "dir", req.ObjectDir, "repo", repoDiskPath)
+		return nil
+	}
+
+	env := []string{"GIT_OBJECT_DIRECTORY=" + cleanObj}
+	var validAlts []string
+	if req.AltObjectDirs != "" {
+		for _, alt := range filepath.SplitList(req.AltObjectDirs) {
+			cleanAlt := filepath.Clean(alt)
+			if !filepath.IsAbs(cleanAlt) {
+				cleanAlt = filepath.Clean(filepath.Join(repoDiskPath, cleanAlt))
+			}
+			realAlt := resolvePath(cleanAlt)
+			if realAlt == realRoot || strings.HasPrefix(realAlt, realRoot+string(filepath.Separator)) {
+				validAlts = append(validAlts, cleanAlt)
+			}
+		}
+	}
+	if len(validAlts) == 0 {
+		validAlts = []string{objectsRoot}
+	}
+	env = append(env, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+strings.Join(validAlts, string(filepath.ListSeparator)))
+
+	if req.QuarantinePath != "" {
+		cleanQuar := filepath.Clean(req.QuarantinePath)
+		if !filepath.IsAbs(cleanQuar) {
+			cleanQuar = filepath.Clean(filepath.Join(repoDiskPath, cleanQuar))
+		}
+		realQuar := resolvePath(cleanQuar)
+		if realQuar == realRoot || strings.HasPrefix(realQuar, realRoot+string(filepath.Separator)) {
+			env = append(env, "GIT_QUARANTINE_PATH="+cleanQuar)
+		}
+	}
+
+	return env
+}
+
+func resolvePath(p string) string {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	return clean
 }
 
 func splitBranches(csv string) map[string]bool {

@@ -70,11 +70,15 @@ knotwork mcp                          # stdio MCP; requires KNOTWORK_MCP_TOKEN
 administrator and expires after the requested duration.
 
 MCP is opt-in on the existing server. It is not a separate service. Streamable
-HTTP is `POST /api/mcp` with the same bearer as the API. `GET /api/mcp/sse` and
-`POST /api/mcp/messages` remain for legacy SSE clients. Local stdio is
-`KNOTWORK_MCP_TOKEN=... knotwork mcp`. The token is an existing device-flow
-bearer or instance JWT. stdout is the protocol stream. Protected-resource
-metadata is at `/.well-known/oauth-protected-resource/api/mcp`.
+HTTP is `POST /api/mcp` with the same API token as the API, sent as
+`Authorization: Bearer` or as HTTP Basic (the password, or the username when
+the password is empty). `GET /api/mcp/sse` and `POST /api/mcp/messages` remain
+for legacy SSE clients. Local stdio is `KNOTWORK_MCP_TOKEN=... knotwork mcp`.
+The token is an existing device-flow bearer or instance JWT. stdout is the
+protocol stream. Protected-resource metadata is at
+`/.well-known/oauth-protected-resource/api/mcp`. MCP HTTP requests use the
+server request log: the response carries `X-Request-ID` and the access line
+records it as `req_id`.
 
 ## Git
 

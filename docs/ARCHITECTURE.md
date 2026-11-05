@@ -59,12 +59,17 @@ admin. SCIM uses the same bearer-token path; deactivation (`active: false` or
 
 MCP reuses those bearers. It does not issue tokens. `POST /api/mcp` is
 stateless Streamable HTTP through `github.com/modelcontextprotocol/go-sdk`
-v1.8.0, so each request's bearer is the only principal. `GET /api/mcp/sse` and
-`POST /api/mcp/messages` remain for legacy SSE clients; the session id only
-prevents a different bearer from writing into that stream. `knotwork mcp`
-speaks stdio for `KNOTWORK_MCP_TOKEN` and rechecks that token on every call.
-RFC 9728 metadata is published at `/.well-known/oauth-protected-resource/api/mcp`.
-There is no embedded authorization server.
+v1.8.0, so each request's credential is the only principal. Clients send that
+credential as `Authorization: Bearer` or as HTTP Basic, using the password, or
+the username when the password is empty. That is the same token rule as Git
+Smart HTTP. The web server request log covers these routes: the response
+carries `X-Request-ID` and the access line records it as `req_id`.
+`GET /api/mcp/sse` and `POST /api/mcp/messages` remain for legacy SSE clients;
+the session id only prevents a different credential from writing into that
+stream. `knotwork mcp` speaks stdio for `KNOTWORK_MCP_TOKEN` and rechecks that
+token on every call. RFC 9728 metadata is published at
+`/.well-known/oauth-protected-resource/api/mcp`. There is no embedded
+authorization server.
 
 ## Git path
 

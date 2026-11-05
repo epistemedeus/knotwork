@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 
 	"knotwork/internal/database"
@@ -107,6 +106,12 @@ func (s *InboxService) ingestOffer(ctx context.Context, peer domain.Peer, activi
 	if mr.SourceRepo == "" || mr.SourceBranch == "" || mr.TargetBranch == "" {
 		return fmt.Errorf("merge request is missing sourceRepo, sourceBranch, or targetBranch")
 	}
+	if err := gitengine.ValidateRef(mr.SourceBranch); err != nil {
+		return fmt.Errorf("invalid source branch name: %w", err)
+	}
+	if err := gitengine.ValidateRef(mr.TargetBranch); err != nil {
+		return fmt.Errorf("invalid target branch name: %w", err)
+	}
 	source, err := url.Parse(mr.SourceRepo)
 	if err != nil || source.Scheme != "https" || !strings.EqualFold(source.Host, peer.Domain) {
 		return fmt.Errorf("source repository must be https on the peer domain")
@@ -128,8 +133,7 @@ func (s *InboxService) ingestOffer(ctx context.Context, peer domain.Peer, activi
 	}
 
 	ref := fmt.Sprintf("refs/federated/mr/%d", result.Number)
-	//nolint:gosec // argv slice: the source is validated as https on the peer domain above.
-	cmd := exec.CommandContext(ctx, s.Git.GitBinary, "-C", repo.DiskPath, "fetch", "--no-tags",
+	cmd := s.Git.Command(ctx, "-C", repo.DiskPath, "fetch", "--no-tags", "--end-of-options",
 		mr.SourceRepo, mr.SourceBranch+":"+ref)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not fetch federated ref: %s", strings.TrimSpace(string(out)))

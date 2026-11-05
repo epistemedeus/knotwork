@@ -188,22 +188,18 @@ type oidcClaims struct {
 	Name              string `json:"name"`
 }
 
-// UserFromRequest resolves a session cookie or an Ed25519 bearer token.
+// UserFromRequest resolves a session cookie, an Ed25519 bearer token, or HTTP Basic credentials.
 func (s *Service) UserFromRequest(r *http.Request) (domain.User, bool) {
 	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
 		raw := strings.TrimPrefix(header, "Bearer ")
-		if claims, err := s.Tokens.Parse(raw); err == nil {
-			user, err := s.DB.GetUserByID(r.Context(), claims.UserID)
-			if err != nil || !user.IsActive {
-				return domain.User{}, false
-			}
-			return user, true
+		return s.userFromToken(r.Context(), raw)
+	}
+	if username, password, ok := r.BasicAuth(); ok {
+		token := password
+		if token == "" {
+			token = username
 		}
-		// Opaque bearer tokens are used by SCIM integrations.
-		if user, err := s.DB.UserForSession(r.Context(), raw); err == nil {
-			return user, true
-		}
-		return domain.User{}, false
+		return s.userFromToken(r.Context(), token)
 	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
@@ -214,6 +210,28 @@ func (s *Service) UserFromRequest(r *http.Request) (domain.User, bool) {
 		return domain.User{}, false
 	}
 	return user, true
+}
+
+func (s *Service) userFromToken(ctx context.Context, raw string) (domain.User, bool) {
+	if raw == "" {
+		return domain.User{}, false
+	}
+	if s.Tokens != nil {
+		if claims, err := s.Tokens.Parse(raw); err == nil {
+			user, err := s.DB.GetUserByID(ctx, claims.UserID)
+			if err != nil || !user.IsActive {
+				return domain.User{}, false
+			}
+			return user, true
+		}
+	}
+	// Opaque tokens are used by SCIM integrations.
+	if s.DB != nil {
+		if user, err := s.DB.UserForSession(ctx, raw); err == nil {
+			return user, true
+		}
+	}
+	return domain.User{}, false
 }
 
 func (s *Service) RequireUser(next http.Handler) http.Handler {

@@ -19,7 +19,7 @@ const (
 	serverVersion = "0.1.0"
 )
 
-// errNoPrincipal means this call has no acceptable bearer identity.
+// errNoPrincipal means this call has no acceptable credential.
 // Handlers must not fall back to an administrator.
 var errNoPrincipal = errors.New("mcp credential refused")
 
@@ -70,8 +70,8 @@ func (s *Server) protocol() *mcp.Server {
 }
 
 // principal resolves the user for this call. A stdio process uses only its
-// configured bearer. HTTP uses the bearer attached to this request and refuses
-// when the transport metadata and the request context name different users.
+// configured bearer. HTTP uses the credential attached to this request and
+// refuses when the transport metadata and the request context name different users.
 func (s *Server) principal(ctx context.Context, extra *mcp.RequestExtra) (domain.User, error) {
 	if s.stdioToken != "" {
 		p, err := s.Auth.PrincipalFromBearer(ctx, s.stdioToken)
@@ -104,10 +104,10 @@ func (s *Server) principal(ctx context.Context, extra *mcp.RequestExtra) (domain
 	return user, nil
 }
 
-func (s *Server) refuse(err error) bool {
+func (s *Server) refuse(ctx context.Context, err error) bool {
 	if err == nil || !errors.Is(err, errNoPrincipal) {
 		return false
 	}
-	s.logger().Info("mcp credential refused")
+	s.logger().InfoContext(ctx, "mcp credential refused")
 	return true
 }

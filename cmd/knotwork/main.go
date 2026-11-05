@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	"knotwork/internal/config"
@@ -13,6 +14,11 @@ import (
 )
 
 func main() {
+	// If executed via direct symlink as "pre-receive", invoke the hook immediately.
+	if filepath.Base(os.Args[0]) == "pre-receive" {
+		os.Exit(gitengine.RunHook("pre-receive", os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -29,7 +35,7 @@ func main() {
 		code = runAuth(os.Args[2:])
 	case "hook":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: knotwork hook pre-receive|post-receive")
+			fmt.Fprintln(os.Stderr, "usage: knotwork hook pre-receive")
 			code = 2
 			break
 		}
@@ -49,7 +55,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `Knotwork — single-node federated Git collaboration
 
 Usage:
-  knotwork serve                     Run the HTTP daemon
+  knotwork serve [flags]             Run the HTTP daemon
+    -v, --verbose, --debug           Enable verbose/debug logging
+    --log-level <level>              Log level (debug, info, warn, error)
+    --log-format <format>            Log format (text, json)
   knotwork status                    Print instance and database status
   knotwork auth login                Authorize Git over HTTPS (device flow)
   knotwork admin grant-role          Grant admin/member/read_only to an OIDC user
@@ -57,7 +66,7 @@ Usage:
   knotwork admin revoke-sessions     Revoke web/CLI sessions
   knotwork admin scim-token          Mint a SCIM bearer token
   knotwork admin peers list|add|remove
-  knotwork hook pre-receive|post-receive
+  knotwork hook pre-receive
   knotwork mcp                       Serve MCP on stdio (requires KNOTWORK_MCP_TOKEN)
   knotwork version
 `)
@@ -99,16 +108,10 @@ func runStatus() int {
 }
 
 func runHook(kind string) int {
-	switch kind {
-	case "pre-receive", "post-receive":
-		return runHookCommand(kind)
-	default:
+	if kind != "pre-receive" {
 		fmt.Fprintln(os.Stderr, "unknown hook", kind)
 		return 2
 	}
-}
-
-func runHookCommand(kind string) int {
 	return gitengine.RunHook(kind, os.Stdin, os.Stdout, os.Stderr)
 }
 

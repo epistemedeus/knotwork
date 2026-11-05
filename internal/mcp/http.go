@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -22,9 +23,11 @@ func tokenInfoFromContext(ctx context.Context) *sdkauth.TokenInfo {
 }
 
 // Register mounts stateless Streamable HTTP, the legacy SSE routes, and the
-// RFC 9728 protected-resource metadata document. Existing API bearers are
-// required on every MCP HTTP request. Knotwork does not advertise an
-// authorization server: OIDC access tokens are not API bearers.
+// RFC 9728 protected-resource metadata document. Every MCP HTTP request must
+// carry an existing API token, either as a bearer or as HTTP Basic credentials
+// (the password, or the username when the password is empty). That is the same
+// token rule as Git Smart HTTP. Knotwork does not advertise an authorization
+// server: OIDC access tokens are not API bearers.
 func (s *Server) Register(mux *http.ServeMux) {
 	base := strings.TrimRight(s.Auth.Cfg.BaseURL, "/")
 	resource := base + "/api/mcp"
@@ -40,9 +43,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /.well-known/oauth-protected-resource/api/mcp", meta)
 	mux.Handle("OPTIONS /.well-known/oauth-protected-resource/api/mcp", meta)
 
-	bearer := sdkauth.RequireBearerToken(s.verifyBearer, &sdkauth.RequireBearerTokenOptions{
-		ResourceMetadataURL: metaURL,
-	})
+	protect := s.requireCredential(metaURL)
 	stream := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s.protocol()
 	}, &mcp.StreamableHTTPOptions{
@@ -51,12 +52,69 @@ func (s *Server) Register(mux *http.ServeMux) {
 	})
 	// GET and DELETE are part of the streamable handler. Stateless mode
 	// answers them with 405, which is what current clients expect.
-	wrapped := bearer(stream)
+	wrapped := protect(stream)
 	mux.Handle("POST /api/mcp", wrapped)
 	mux.Handle("GET /api/mcp", wrapped)
 	mux.Handle("DELETE /api/mcp", wrapped)
-	mux.Handle("GET /api/mcp/sse", bearer(http.HandlerFunc(s.sseGET)))
-	mux.Handle("POST /api/mcp/messages", bearer(http.HandlerFunc(s.ssePOST)))
+	mux.Handle("GET /api/mcp/sse", protect(http.HandlerFunc(s.sseGET)))
+	mux.Handle("POST /api/mcp/messages", protect(http.HandlerFunc(s.ssePOST)))
+}
+
+// requireCredential accepts an API bearer or the HTTP Basic form of that same
+// token. Basic credentials are checked by the bearer verifier so the SDK still
+// stores TokenInfo on the request. The raw token is not logged.
+func (s *Server) requireCredential(metadataURL string) func(http.Handler) http.Handler {
+	bearer := sdkauth.RequireBearerToken(s.verifyBearer, &sdkauth.RequireBearerTokenOptions{
+		ResourceMetadataURL: metadataURL,
+	})
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			username, password, ok := r.BasicAuth()
+			if !ok {
+				bearer(next).ServeHTTP(w, r)
+				return
+			}
+			token := password
+			if token == "" {
+				token = username
+			}
+			if token == "" || strings.ContainsAny(token, "\r\n") {
+				s.logger().InfoContext(r.Context(), "mcp credential refused")
+				if metadataURL != "" {
+					w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer resource_metadata=%q", metadataURL))
+				}
+				w.Header().Add("WWW-Authenticate", `Basic realm="Knotwork"`)
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			clone := r.Clone(r.Context())
+			clone.Header.Set("Authorization", "Bearer "+token)
+			bearer(next).ServeHTTP(&basicChallengeWriter{ResponseWriter: w}, clone)
+		})
+	}
+}
+
+// basicChallengeWriter adds the Git Smart HTTP Basic challenge beside the
+// SDK's bearer challenge when this request authenticated with HTTP Basic.
+type basicChallengeWriter struct {
+	http.ResponseWriter
+}
+
+func (w *basicChallengeWriter) WriteHeader(status int) {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		w.Header().Add("WWW-Authenticate", `Basic realm="Knotwork"`)
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *basicChallengeWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *basicChallengeWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (s *Server) verifyBearer(ctx context.Context, token string, _ *http.Request) (*sdkauth.TokenInfo, error) {
@@ -66,7 +124,7 @@ func (s *Server) verifyBearer(ctx context.Context, token string, _ *http.Request
 	principal, err := s.Auth.PrincipalFromBearer(ctx, token)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidBearer) {
-			s.logger().Info("mcp credential refused")
+			s.logger().InfoContext(ctx, "mcp credential refused")
 			return nil, sdkauth.ErrInvalidToken
 		}
 		return nil, err
@@ -86,7 +144,7 @@ func (s *Server) sseGET(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.DB.GetUserByID(r.Context(), info.UserID)
 	if err != nil || !user.IsActive {
-		s.logger().Info("mcp credential refused")
+		s.logger().InfoContext(r.Context(), "mcp credential refused")
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}

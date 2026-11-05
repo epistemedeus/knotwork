@@ -3,33 +3,36 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"knotwork/internal/auth"
 	"knotwork/internal/backup"
 	"knotwork/internal/ci"
 	"knotwork/internal/config"
 	"knotwork/internal/database"
+	"knotwork/internal/domain"
 	"knotwork/internal/federation"
 	"knotwork/internal/gitengine"
+	"knotwork/internal/logging"
 	"knotwork/internal/mcp"
 )
 
 type Server struct {
-	Cfg    config.Config
-	DB     *database.DB
-	Auth   *auth.Service
-	Git    *gitengine.Manager
-	Hook   *gitengine.HookServer
-	CI     *ci.Executor
-	Hub    *ci.Hub
-	Backup *backup.Manager
-	Fed    *federation.InboxService
-	MCP    *mcp.Server
-	Log    *slog.Logger
+	Cfg           config.Config
+	DB            *database.DB
+	Auth          *auth.Service
+	Git           *gitengine.Manager
+	Hook          *gitengine.HookServer
+	CI            *ci.Executor
+	Hub           *ci.Hub
+	Backup        *backup.Manager
+	Fed           *federation.InboxService
+	MCP           *mcp.Server
+	Log           *slog.Logger
+	OnPushSuccess func(ctx context.Context, repo domain.Repository, user domain.User, refs []gitengine.RefUpdate)
 
 	mux *http.ServeMux
 }
@@ -42,6 +45,8 @@ func (s *Server) Build() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	s.mux.HandleFunc("GET /{$}", s.home)
+	s.mux.Handle("GET /repos/new", s.Auth.RequireUser(http.HandlerFunc(s.newRepoPage)))
+	s.mux.Handle("POST /repos/new", s.Auth.RequireUser(http.HandlerFunc(s.createRepoForm)))
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}", s.repoPage)
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}/merge-requests/{number}", s.mrPage)
 	s.mux.HandleFunc("GET /repos/{owner}/{repo}/pipelines/{id}", s.pipelinePage)
@@ -64,16 +69,18 @@ func (s *Server) Build() http.Handler {
 func (s *Server) registerGitHTTP() {
 	h := &gitengine.HTTPHandler{
 		Manager:         s.Git,
+		HookServer:      s.Hook,
 		RepoByPath:      s.DB.GetRepoByPath,
 		UserFromRequest: s.Auth.UserFromRequest,
 		Role:            s.DB.RepoRole,
 		Logger:          s.Log,
+		OnPushSuccess:   s.OnPushSuccess,
 	}
 	h.Register(s.mux)
 }
 
 func (s *Server) wrap(next http.Handler) http.Handler {
-	return s.recoverPanic(s.logRequests(securityHeaders(next)))
+	return s.recoverPanic(logging.Middleware(s.Log)(securityHeaders(next)))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -89,36 +96,11 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		s.Log.Info("http", "method", r.Method, "path", r.URL.Path, "status", rec.status, "duration", time.Since(start))
-	})
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
-func (r *statusRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
 func (s *Server) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				s.Log.Error("panic serving request", "path", r.URL.Path, "panic", v)
+				s.Log.ErrorContext(r.Context(), "panic serving request", "path", r.URL.Path, "panic", v)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()

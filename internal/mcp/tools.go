@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 
 	"knotwork/internal/database"
 	"knotwork/internal/domain"
+	"knotwork/internal/gitengine"
 )
 
 // codeAccessDenied is the code the previous handwritten server returned for a
@@ -65,7 +65,7 @@ type commentArgs struct {
 
 func (s *Server) getMRDetails(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	user, err := s.principal(ctx, req.GetExtra())
-	if s.refuse(err) {
+	if s.refuse(ctx, err) {
 		return nil, rpcErr(codeAccessDenied, "authentication required")
 	}
 	var args mrArgs
@@ -81,7 +81,7 @@ func (s *Server) getMRDetails(ctx context.Context, req *mcp.CallToolRequest) (*m
 
 func (s *Server) createReviewComment(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	user, err := s.principal(ctx, req.GetExtra())
-	if s.refuse(err) {
+	if s.refuse(ctx, err) {
 		return nil, rpcErr(codeAccessDenied, "authentication required")
 	}
 	var args commentArgs
@@ -100,7 +100,7 @@ func (s *Server) createReviewComment(ctx context.Context, req *mcp.CallToolReque
 	}
 	id, err := s.DB.CreateReviewComment(ctx, mr.ID, user.ID, args.Path, args.Line, args.Body)
 	if err != nil {
-		s.logger().Info("mcp comment write failed")
+		s.logger().InfoContext(ctx, "mcp comment write failed")
 		return nil, rpcErr(jsonrpc.CodeInternalError, "could not create comment")
 	}
 	return textResult(map[string]string{"id": id})
@@ -179,7 +179,7 @@ func (s *Server) resourceListMiddleware(next mcp.MethodHandler) mcp.MethodHandle
 			return next(ctx, method, req)
 		}
 		user, err := s.principal(ctx, req.GetExtra())
-		if s.refuse(err) {
+		if s.refuse(ctx, err) {
 			return nil, rpcErr(codeAccessDenied, "authentication required")
 		}
 		repos, err := s.DB.ListRepos(ctx)
@@ -205,7 +205,7 @@ func (s *Server) resourceListMiddleware(next mcp.MethodHandler) mcp.MethodHandle
 
 func (s *Server) readResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	user, err := s.principal(ctx, req.GetExtra())
-	if s.refuse(err) {
+	if s.refuse(ctx, err) {
 		return nil, rpcErr(codeAccessDenied, "authentication required")
 	}
 	uri := ""
@@ -244,15 +244,22 @@ func (s *Server) resourceText(ctx context.Context, user domain.User, uri string)
 	}
 	switch kind {
 	case "tree":
-		if !validGitArg(rest) {
+		if rest == "" || gitengine.ValidateRef(rest) != nil {
 			return "", rpcErr(jsonrpc.CodeInvalidParams, "invalid resource URI")
 		}
-		out, err := s.git(ctx, repo.DiskPath, "ls-tree", "-r", "--name-only", rest)
-		if err != nil {
-			s.logger().Info("mcp tree read failed")
+		if s.Git == nil {
+			s.logger().InfoContext(ctx, "mcp tree read failed")
 			return "", rpcErr(jsonrpc.CodeInternalError, "could not read tree")
 		}
-		return string(out), nil
+		paths, err := s.Git.ListTree(ctx, repo.DiskPath, rest)
+		if err != nil {
+			if errors.Is(err, gitengine.ErrInvalidRef) {
+				return "", rpcErr(jsonrpc.CodeInvalidParams, "invalid resource URI")
+			}
+			s.logger().InfoContext(ctx, "mcp tree read failed")
+			return "", rpcErr(jsonrpc.CodeInternalError, "could not read tree")
+		}
+		return strings.Join(paths, "\n") + "\n", nil
 	case "diff":
 		number, err := strconv.ParseInt(rest, 10, 64)
 		if err != nil || number <= 0 {
@@ -265,27 +272,25 @@ func (s *Server) resourceText(ctx context.Context, user domain.User, uri string)
 			}
 			return "", rpcErr(jsonrpc.CodeInternalError, "could not load merge request")
 		}
-		if !validGitArg(mr.HeadSHA) {
+		if gitengine.ValidateRef(mr.HeadSHA) != nil {
 			return "", rpcErr(jsonrpc.CodeInvalidParams, "invalid merge request")
 		}
-		out, err := s.git(ctx, repo.DiskPath, "show", "--format=", "--patch", mr.HeadSHA)
-		if err != nil {
-			s.logger().Info("mcp diff read failed")
+		if s.Git == nil {
+			s.logger().InfoContext(ctx, "mcp diff read failed")
 			return "", rpcErr(jsonrpc.CodeInternalError, "could not read diff")
 		}
-		return string(out), nil
+		patch, err := s.Git.DiffRange(ctx, repo.DiskPath, "", mr.HeadSHA)
+		if err != nil {
+			if errors.Is(err, gitengine.ErrInvalidRef) {
+				return "", rpcErr(jsonrpc.CodeInvalidParams, "invalid merge request")
+			}
+			s.logger().InfoContext(ctx, "mcp diff read failed")
+			return "", rpcErr(jsonrpc.CodeInternalError, "could not read diff")
+		}
+		return string(patch), nil
 	default:
 		return "", rpcErr(jsonrpc.CodeInvalidParams, "unsupported resource")
 	}
-}
-
-func (s *Server) git(ctx context.Context, disk string, args ...string) ([]byte, error) {
-	if s.Git == nil || s.Git.GitBinary == "" || disk == "" {
-		return nil, errors.New("git is not configured")
-	}
-	argv := append([]string{"-C", disk}, args...)
-	cmd := exec.CommandContext(ctx, s.Git.GitBinary, argv...)
-	return cmd.CombinedOutput()
 }
 
 func parseResourceURI(uri string) (repoPath, kind, rest string, err error) {
@@ -313,16 +318,6 @@ func parseResourceURI(uri string) (repoPath, kind, rest string, err error) {
 }
 
 var errInvalidURI = errors.New("invalid resource URI")
-
-func validGitArg(v string) bool {
-	if v == "" || len(v) > 256 {
-		return false
-	}
-	if strings.HasPrefix(v, "-") || strings.Contains(v, "..") {
-		return false
-	}
-	return !strings.ContainsAny(v, " \t\r\n\\")
-}
 
 func textResult(v any) (*mcp.CallToolResult, error) {
 	text, err := indented(v)

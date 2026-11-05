@@ -352,6 +352,85 @@ func TestPrincipalBoundary(t *testing.T) {
 	}
 }
 
+func TestHTTPBasicAuth(t *testing.T) {
+	fix := newFixture(t)
+	endpoint := fix.server.URL + "/api/mcp"
+
+	t.Run("password token lists tools and reads a merge request", func(t *testing.T) {
+		cs := fix.connectBasic(t, "knotwork", fix.aliceToken, "2025-03-26")
+		tools, err := cs.ListTools(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tool := range tools.Tools {
+			names = append(names, tool.Name)
+		}
+		if !slices.Contains(names, "get_mr_details") || !slices.Contains(names, "create_review_comment") {
+			t.Fatalf("tools = %v", names)
+		}
+		text := callText(t, cs, "get_mr_details", map[string]any{"repo": fix.private.Path, "number": fix.mr.Number})
+		if !strings.Contains(text, fix.mr.Title) {
+			t.Fatalf("merge request text = %s", text)
+		}
+	})
+
+	t.Run("username and password", func(t *testing.T) {
+		cs := fix.connectBasic(t, "alice", fix.aliceToken, "2026-07-28")
+		if _, err := cs.ListTools(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("token as username", func(t *testing.T) {
+		cs := fix.connectBasic(t, fix.aliceToken, "", "2025-06-18")
+		text := callText(t, cs, "get_mr_details", map[string]any{"repo": fix.public.Path, "number": fix.publicMR.Number})
+		if !strings.Contains(text, fix.publicMR.Title) {
+			t.Fatalf("public merge request text = %s", text)
+		}
+	})
+
+	t.Run("invalid password is refused and not logged", func(t *testing.T) {
+		const bad = "not-a-real-basic-token"
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, endpoint, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth("knotwork", bad)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d body = %s", res.StatusCode, body)
+		}
+		challenge := strings.Join(res.Header.Values("WWW-Authenticate"), " ")
+		if !strings.Contains(challenge, `resource_metadata=`) || !strings.Contains(challenge, `Basic realm="Knotwork"`) {
+			t.Fatalf("WWW-Authenticate = %q", res.Header.Values("WWW-Authenticate"))
+		}
+		if strings.Contains(string(body), bad) || strings.Contains(fix.logs.String(), bad) || strings.Contains(fix.logs.String(), fix.aliceToken) {
+			t.Fatal("response or log contains a credential")
+		}
+		if !strings.Contains(fix.logs.String(), "mcp credential refused") {
+			t.Fatalf("refusal log = %s", fix.logs.String())
+		}
+	})
+
+	t.Run("other user cannot read a private repository", func(t *testing.T) {
+		bob := fix.connectBasic(t, "bob", fix.bobToken, "2025-11-25")
+		_, err := bob.CallTool(t.Context(), &mcp.CallToolParams{Name: "get_mr_details", Arguments: map[string]any{
+			"repo": fix.private.Path, "number": fix.mr.Number,
+		}})
+		if codeOf(t, err) != codeAccessDenied {
+			t.Fatalf("bob basic auth read alice private: %v", err)
+		}
+	})
+}
+
 func TestCredentialRevocationAndRecovery(t *testing.T) {
 	fix := newFixture(t)
 	endpoint := fix.server.URL + "/api/mcp"
@@ -660,6 +739,21 @@ func newFixture(t *testing.T) *fixture {
 	}
 }
 
+func (f *fixture) connectBasic(t *testing.T, username, password, version string) *mcp.ClientSession {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "knotwork-test", Version: "v1.8.0"}, nil).Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   f.server.URL + "/api/mcp",
+		HTTPClient: basicClient(username, password),
+	}, &mcp.ClientSessionOptions{ProtocolVersion: version})
+	if err != nil {
+		t.Fatalf("basic connect %s: %v", version, err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
 func (f *fixture) connect(t *testing.T, endpoint, token, version string) *mcp.ClientSession {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -691,6 +785,14 @@ func mustReq(t *testing.T, method, url string, body io.Reader) *http.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+func basicClient(username, password string) *http.Client {
+	return &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		clone := r.Clone(r.Context())
+		clone.SetBasicAuth(username, password)
+		return http.DefaultTransport.RoundTrip(clone)
+	})}
 }
 
 func bearerClient(token string) *http.Client {
